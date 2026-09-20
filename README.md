@@ -10,10 +10,10 @@ extendable to other games later without changing how it works today.
 
 1. **Install Python** (3.11 or newer) from [python.org](https://www.python.org/downloads/).
    On the installer's first screen, check **"Add python.exe to PATH"**.
-2. **Download this app**: click the green **Code** button on this page →
-   **Download ZIP**, then extract it somewhere convenient (e.g.
-   `Documents\MoonberrySaveSync`). Or grab a versioned copy from the
-   [Releases page](../../releases).
+2. **Download this app**: go to the [Releases page](../../releases/latest)
+   and download **`moonberry-save-sync-vX.X.X.zip`** under Assets (not
+   the auto-generated "Source code" links above it), then extract it
+   somewhere convenient (e.g. `Documents\MoonberrySaveSync`).
 3. Open a terminal in that folder (Windows: right-click inside the folder
    in File Explorer → **Open in Terminal**) and run:
    ```
