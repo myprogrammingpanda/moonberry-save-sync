@@ -1,0 +1,30 @@
+{
+  "active_game": "valheim",
+
+  "player_name": "YourNameHere",
+
+  "worker_url": "https://your-worker.example.workers.dev",
+  "worker_secret": "change_me",
+
+  "storage_endpoint_url": "https://<account_id>.r2.cloudflarestorage.com",
+  "storage_access_key_id": "change_me",
+  "storage_secret_access_key": "change_me",
+  "storage_bucket_name": "change_me",
+
+  "moonberry_url": "",
+  "moonberry_secret": "",
+
+  "github_repo": "",
+
+  "poll_interval_seconds": 30,
+  "max_saved_versions": 5,
+
+  "games": {
+    "valheim": {
+      "valheim_worlds_folder": "%userprofile%\\AppData\\LocalLow\\IronGate\\Valheim\\worlds_local",
+      "valheim_world_name": "YourWorldName",
+      "valheim_log_path": "%userprofile%\\AppData\\LocalLow\\IronGate\\Valheim\\Player.log",
+      "valheim_launch_uri": "steam://rungameid/892970"
+    }
+  }
+}
