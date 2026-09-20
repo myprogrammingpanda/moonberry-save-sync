@@ -29,6 +29,13 @@ class ValheimAdapter(GameAdapter):
     game_id = "valheim"
     display_name = "Valheim"
 
+    config_fields = [
+        ("valheim_worlds_folder", "Worlds folder", "folder"),
+        ("valheim_world_name", "World name", "text"),
+        ("valheim_log_path", "Player.log path", "file"),
+        ("valheim_launch_uri", "Launch URI (Steam)", "text"),
+    ]
+
     @property
     def save_key_prefix(self) -> str:
         # Keep the pre-existing "world_save_" prefix (rather than the

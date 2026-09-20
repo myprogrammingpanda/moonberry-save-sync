@@ -16,6 +16,12 @@ class GameAdapter(ABC):
                          # storage key prefixes and local version filenames
     display_name: str   # e.g. "Valheim" -- shown in the GUI
 
+    # Describes this game's own config.json sub-section (config["games"][game_id])
+    # so the settings UI can render a form for it generically, without knowing
+    # anything game-specific. Each entry is (key, label, kind), kind one of
+    # "text", "folder", "file" (the latter two get a Browse... button).
+    config_fields: list[tuple[str, str, str]] = []
+
     def __init__(self, game_config: dict):
         """`game_config` is this game's own sub-section of config.json,
         i.e. config["games"][self.game_id]."""

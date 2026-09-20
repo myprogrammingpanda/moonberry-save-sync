@@ -43,15 +43,23 @@ class SessionController:
         # Without this, the app would auto-relaunch the game every poll
         # cycle forever after a session ends, since "nobody's hosting" is
         # true right up until someone (usually you again) claims it.
+        # Deliberately never auto-set, including on first launch -- opening
+        # the app should only ever show status, never claim host or launch
+        # the game on its own.
         self.play_requested = threading.Event()
-        # Auto-launch on the very first run only, so opening the app for
-        # the first time still just starts playing with no extra click.
-        # Every session after that requires an explicit "Play Now" click --
-        # this is what prevents the app from auto-relaunching in a loop
-        # after a session ends.
-        self.play_requested.set()
 
-    def sync_down_if_needed(self, cloud_save_key: str | None):
+        # Guards every zip/upload/download flow (a real hosting session or
+        # either manual sync action) since they all touch the same temp
+        # file paths and local save folder -- without this, a manual sync
+        # running at the same moment as a real session could race on those
+        # files.
+        self._sync_lock = threading.Lock()
+
+    def sync_down_if_needed(self, cloud_save_key: str | None) -> bool:
+        """Downloads and applies the cloud save if the local copy doesn't
+        already match it. Returns True if the local save now matches the
+        cloud version (whether that took a fresh download or it already
+        matched), or False if a download was needed but failed."""
         local_save_key = self.local_record.read()
 
         # Fallback for the transition period right after upgrading to the
@@ -80,10 +88,17 @@ class SessionController:
                 tmp_zip.unlink(missing_ok=True)
                 self.local_record.write(effective_cloud_key)
                 log.info("Local save updated to '%s'.", effective_cloud_key)
+                return True
+            return False
         else:
             log.info("Local save is already up to date ('%s').", local_save_key)
+            return True
 
     def become_host_and_play(self):
+        with self._sync_lock:
+            self._become_host_and_play_locked()
+
+    def _become_host_and_play_locked(self):
         log.info("No one is hosting. Attempting to claim host...")
         result = self.coordinator.claim_host()
         if not result.get("ok"):
@@ -168,14 +183,95 @@ class SessionController:
                 self.coordinator.release_host()
                 log.info("Host slot released (no upload happened this time).")
 
+    def force_upload_current_save(self) -> tuple[bool, str]:
+        """Uploads whatever's currently in the save folder as a new
+        version, independent of whether this app was used to host a
+        session -- e.g. after playing solo, outside the app's normal
+        flow. Still goes through the same claim/release ceremony as a
+        real session, so it can't step on an actual in-progress host
+        (this fails for ANY current claim-holder, not just other
+        players -- the coordinator's /claim is a strict atomic check,
+        not an identity check). Launching the game is skipped entirely;
+        this is upload-only."""
+        if not self._sync_lock.acquire(blocking=False):
+            return False, "A sync operation is already in progress — try again in a moment."
+        try:
+            return self._force_upload_current_save_locked()
+        finally:
+            self._sync_lock.release()
+
+    def _force_upload_current_save_locked(self) -> tuple[bool, str]:
+        log.info("Manual upload requested. Attempting to claim host...")
+        result = self.coordinator.claim_host()
+        if not result.get("ok"):
+            host_name = result.get("current", {}).get("host_name") or "someone"
+            msg = f"Someone is currently hosting ({host_name}) — try again later."
+            log.warning(msg)
+            return False, msg
+
+        uploaded_successfully = False
+        uploaded_key = None
+        try:
+            out_zip = self.app_dir / "_outgoing_save.zip"
+            log.info("Zipping current save for manual upload...")
+            self.adapter.zip_save(out_zip)
+            uploaded_key = self.storage.new_save_key()
+            log.info("Uploading save as '%s'...", uploaded_key)
+            self.storage.upload_save(out_zip, uploaded_key)
+            out_zip.unlink(missing_ok=True)
+            uploaded_successfully = True
+        except Exception:
+            log.exception("Manual upload failed.")
+        finally:
+            if uploaded_successfully:
+                self.coordinator.release_host(save_key=uploaded_key)
+                self.local_record.write(uploaded_key)
+                self.storage.prune_old_saves(keep=self.max_saved_versions)
+            else:
+                self.coordinator.release_host()
+
+        if uploaded_successfully:
+            msg = f"Save uploaded as '{uploaded_key}'."
+            log.info(msg)
+            return True, msg
+        return False, "Upload failed — see log for details."
+
+    def force_download_latest(self) -> tuple[bool, str]:
+        """Downloads and applies whatever the coordinator currently has
+        as the latest save, reusing sync_down_if_needed's own
+        backup-before-overwrite logic -- the same protection a normal
+        sync gets. No claim is taken: this only reads the coordinator's
+        status and the storage bucket, neither of which is exclusive."""
+        if not self._sync_lock.acquire(blocking=False):
+            return False, "A sync operation is already in progress — try again in a moment."
+        try:
+            return self._force_download_latest_locked()
+        finally:
+            self._sync_lock.release()
+
+    def _force_download_latest_locked(self) -> tuple[bool, str]:
+        try:
+            status = self.coordinator.get_status()
+        except requests.RequestException as e:
+            msg = f"Could not reach the coordinator: {e}"
+            log.warning(msg)
+            return False, msg
+
+        log.info("Manual download requested.")
+        try:
+            ok = self.sync_down_if_needed(status.get("save_key"))
+        except Exception:
+            log.exception("Manual download failed.")
+            return False, "Download failed — see log for details."
+
+        if ok:
+            return True, "Local save is up to date with the latest cloud version."
+        return False, "Download failed — see log for details."
+
     def run_loop(self, update_status_text=None, notify_desktop=None):
         last_notified_host = None  # tracks who we've already notified about,
         # so we only pop a notification ONCE per session start, not every
         # poll cycle while that person keeps hosting.
-        is_first_check = True  # the auto-play-on-open behavior should only
-        # ever apply to this very first check -- if someone else is already
-        # hosting right now, that intent gets discarded rather than sitting
-        # around waiting to fire the instant they stop.
 
         while True:
             try:
@@ -202,17 +298,6 @@ class SessionController:
                     continue  # loop back around immediately to re-check status fresh
 
                 if status.get("hosting"):
-                    if is_first_check and self.play_requested.is_set():
-                        # Someone else is already hosting on our very first
-                        # check -- discard the auto-play intent instead of
-                        # letting it linger until they eventually stop.
-                        self.play_requested.clear()
-                        log.info(
-                            "Someone else is already hosting -- won't auto-play "
-                            "later when they stop. Use 'Play Now' if you want to "
-                            "host after them."
-                        )
-
                     host_name = status.get("host_name")
                     join_code = status.get("join_code")
                     code_part = f" (Join Code: {join_code})" if join_code else ""
@@ -247,10 +332,12 @@ class SessionController:
                         else:
                             update_status_text("Idle — click 'Play Now' to host")
 
-                is_first_check = False
             except requests.RequestException as e:
                 log.error("Coordinator unreachable: %s", e)
                 if update_status_text:
                     update_status_text("Coordinator unreachable — retrying...")
 
-            time.sleep(self.poll_interval_seconds)
+            # Waits up to the normal poll interval, but wakes immediately
+            # if "Play Now" sets play_requested mid-wait -- same polling
+            # cadence when idle, no lag when a click needs acting on.
+            self.play_requested.wait(timeout=self.poll_interval_seconds)

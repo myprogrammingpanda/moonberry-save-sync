@@ -31,7 +31,7 @@ from core.storage import LocalSaveRecord, SaveStorage
 from games._discovery import discover_adapters
 from gui.app import App
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.1.0"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
@@ -49,9 +49,16 @@ log = logging.getLogger("moonberry-sync")
 
 
 def main():
+    adapters = discover_adapters()
+
+    if not CONFIG_PATH.exists():
+        from gui.settings import run_setup_wizard
+
+        if not run_setup_wizard(CONFIG_PATH, adapters):
+            sys.exit(0)  # user closed the setup wizard without saving
+
     cfg = load_config(CONFIG_PATH)
 
-    adapters = discover_adapters()
     active_game = cfg.get("active_game")
     if not active_game or active_game not in adapters:
         log.error(
