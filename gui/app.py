@@ -2,8 +2,17 @@
 original system tray icon). Every "supported" game (configured, with a
 local save on disk) gets its own SessionController and its own Manual Sync
 row -- but only the active game's controller runs run_loop() and drives the
-top status line / Play Now, since hosting stays limited to one game at a
-time, globally."""
+top status line / Play Now / Host Now, since hosting stays limited to one
+game at a time, globally.
+
+Play Now and Host Now are two separate, independent actions: Play Now just
+opens the game (whether you're starting your own world or joining someone
+else's -- it doesn't know or care which); Host Now claims the host slot,
+syncs your save, and waits for you to start the game yourself, then
+watches/uploads when you're done. Clicking Host Now before Play Now is what
+gets your save synced before you play -- there's no enforced ordering
+between the two buttons, syncing just isn't possible anymore once the game
+is already open."""
 
 import ctypes
 import json
@@ -36,13 +45,13 @@ _LOG_COLOR_KEYS = {"WARNING": "warning", "ERROR": "error", "CRITICAL": "error"}
 
 
 class MainWindow(QMainWindow):
-    # SessionController.run_loop calls its update_status_text/notify_desktop
-    # callbacks from a background thread -- these signals are how that
-    # reaches the GUI thread safely (Qt marshals a signal emitted from any
-    # thread onto the thread the receiving QObject lives on).
+    # SessionController.run_loop/host_now call these from a background
+    # thread -- these signals are how that reaches the GUI thread safely
+    # (Qt marshals a signal emitted from any thread onto the thread the
+    # receiving QObject lives on).
     status_changed = Signal(str)
     desktop_notify = Signal(str, str)
-    hosting_active_changed = Signal(bool)
+    host_now_finished = Signal(bool, str)
 
     def __init__(self, game_controllers: dict, active_game_id: str, app_version: str):
         super().__init__()
@@ -68,7 +77,7 @@ class MainWindow(QMainWindow):
 
         self.status_changed.connect(self.status_label.setText)
         self.desktop_notify.connect(self._on_desktop_notify)
-        self.hosting_active_changed.connect(self._on_hosting_active_changed)
+        self.host_now_finished.connect(self._on_host_now_finished)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -103,8 +112,18 @@ class MainWindow(QMainWindow):
 
         self.play_button = QPushButton("Play Now")
         self.play_button.setProperty("role", "primary")
+        self.play_button.setToolTip(f"Just opens {self.controller.adapter.display_name} -- doesn't claim host or sync.")
         self.play_button.clicked.connect(self._on_play_now)
+
+        self.host_button = QPushButton("Host Now")
+        self.host_button.setProperty("role", "primary")
+        self.host_button.setToolTip(
+            "Claims the host slot, syncs your save, then waits for you to start the game."
+        )
+        self.host_button.clicked.connect(self._on_host_now)
+
         play_row = QHBoxLayout()
+        play_row.addWidget(self.host_button)
         play_row.addWidget(self.play_button)
         play_row.addStretch()
         layout.addLayout(play_row)
@@ -139,8 +158,36 @@ class MainWindow(QMainWindow):
     # -- actions --
 
     def _on_play_now(self):
-        self.controller.play_requested.set()
-        self.status_changed.emit("Play requested — will start shortly...")
+        # Deliberately dumb: just opens the game, no claim, no status
+        # check, no sync. Joining someone else's session never touches
+        # your local save (only the host's does), and starting your own
+        # world is Host Now's job to wrap with claim/sync/upload -- this
+        # button's only job is opening the game itself.
+        try:
+            self.controller.adapter.launch()
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Launch failed", f"Could not launch {self.controller.adapter.display_name}: {e}"
+            )
+
+    def _on_host_now(self):
+        self.host_button.setEnabled(False)
+        self.play_button.setEnabled(False)
+        self.status_changed.emit("Claiming host...")
+
+        def worker():
+            success, msg = self.controller.host_now(update_status_text=self.status_changed.emit)
+            self.host_now_finished.emit(success, msg)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_host_now_finished(self, success: bool, msg: str):
+        self.host_button.setEnabled(True)
+        self.play_button.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "Host Now", msg)
+        else:
+            QMessageBox.critical(self, "Host Now", msg)
 
     def _read_theme_pref(self) -> str:
         try:
@@ -181,15 +228,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         os._exit(0)
 
-    def _on_hosting_active_changed(self, active: bool):
-        # Disabled for the whole claim-to-release span of a hosting
-        # session, not just while the game process is open -- clicking
-        # Play Now during the claim/sync-down or zip/upload phases (game
-        # not running yet, or not running anymore, but the session is
-        # still very much in progress) would otherwise silently queue
-        # another auto-host attempt for right after this one finishes.
-        self.play_button.setEnabled(not active)
-
     # -- callbacks handed to SessionController.run_loop; called from the
     # background poll thread, so they only ever go through Qt signals --
 
@@ -218,7 +256,7 @@ class MainWindow(QMainWindow):
     def run_session_loop(self):
         t = threading.Thread(
             target=self.controller.run_loop,
-            args=(self.status_changed.emit, self.desktop_notify.emit, self.hosting_active_changed.emit),
+            args=(self.status_changed.emit, self.desktop_notify.emit),
             daemon=True,
         )
         t.start()

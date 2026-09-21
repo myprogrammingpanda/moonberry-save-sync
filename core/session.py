@@ -1,7 +1,11 @@
 """Game-agnostic host/sync state machine. Drives a GameAdapter through
-claim -> sync -> launch -> watch -> zip -> upload -> release. This mirrors
-the original single-file app's logic exactly, generalized to call through a
-GameAdapter instead of being wired directly to one game."""
+claim -> sync -> wait for you to start the game yourself -> watch -> zip ->
+upload -> release. This mirrors the original single-file app's logic,
+generalized to call through a GameAdapter instead of being wired directly
+to one game -- except Host Now no longer launches the game itself (that's
+Play Now's job, a separate dumb "just open it" button); Host Now's job is
+purely the claim/sync/watch/upload lifecycle around whatever session you
+start yourself."""
 
 import logging
 import threading
@@ -38,22 +42,23 @@ class SessionController:
         self.poll_interval_seconds = poll_interval_seconds
         self.max_saved_versions = max_saved_versions
 
-        # Set by the GUI's "Play Now" button. The loop only attempts to
-        # become host when this is set -- otherwise it just reports status.
-        # Without this, the app would auto-relaunch the game every poll
-        # cycle forever after a session ends, since "nobody's hosting" is
-        # true right up until someone (usually you again) claims it.
-        # Deliberately never auto-set, including on first launch -- opening
-        # the app should only ever show status, never claim host or launch
-        # the game on its own.
-        self.play_requested = threading.Event()
-
         # Guards every zip/upload/download flow (a real hosting session or
         # either manual sync action) since they all touch the same temp
         # file paths and local save folder -- without this, a manual sync
         # running at the same moment as a real session could race on those
         # files.
         self._sync_lock = threading.Lock()
+
+        # True for the whole span between a successful Host Now claim and
+        # its eventual release -- including the window where it's claimed
+        # and synced but still waiting for you to actually start the game
+        # yourself, which can legitimately take a few minutes. run_loop's
+        # stale-claim self-heal (below) needs this to tell that apart from
+        # a genuinely stale claim left over from a crashed previous run of
+        # the app -- without it, the self-heal would race an active,
+        # perfectly healthy Host Now call running concurrently on its own
+        # thread and yank the claim out from under it.
+        self._host_now_pending = False
 
     def sync_down_if_needed(self, cloud_save_key: str | None) -> bool:
         """Downloads and applies the cloud save if the local copy doesn't
@@ -94,18 +99,42 @@ class SessionController:
             log.info("Local save is already up to date ('%s').", local_save_key)
             return True
 
-    def become_host_and_play(self, update_status_text=None):
-        with self._sync_lock:
-            self._become_host_and_play_locked(update_status_text)
+    # How long Host Now waits for you to actually start the game yourself
+    # after claiming and syncing -- much longer than the old "did the
+    # process we just launched actually start" timeout, since this is now
+    # waiting on a human to notice and click Play Now (or launch it some
+    # other way), not on the OS finishing a process launch.
+    HOST_NOW_WAIT_SECONDS = 300
 
-    def _become_host_and_play_locked(self, update_status_text=None):
-        log.info("No one is hosting. Attempting to claim host...")
+    def host_now(self, update_status_text=None) -> tuple[bool, str]:
+        """Claims the host slot, syncs your local save, then waits for you
+        to start the game yourself -- deliberately does NOT launch it (see
+        Play Now for that). Refuses outright if the game's already
+        running: syncing a save the game already has loaded is unsafe --
+        the write either fails outright, or succeeds and then gets
+        silently overwritten again by the game's own next autosave anyway,
+        since its in-memory state was never touched -- so "close it first"
+        is the only safe answer, not a special-cased partial sync."""
+        if self.adapter.is_running():
+            return False, f"{self.adapter.display_name} is already running — close it first, then click Host Now."
+        if not self._sync_lock.acquire(blocking=False):
+            return False, "A sync operation is already in progress — try again in a moment."
+        try:
+            return self._host_now_locked(update_status_text)
+        finally:
+            self._sync_lock.release()
+
+    def _host_now_locked(self, update_status_text=None) -> tuple[bool, str]:
+        log.info("Host Now requested. Attempting to claim host...")
         result = self.coordinator.claim_host()
         if not result.get("ok"):
-            log.info("Someone beat us to it: %s", result.get("current"))
-            return
+            host_name = result.get("current", {}).get("host_name") or "someone"
+            msg = f"Someone is currently hosting ({host_name}) — try again later."
+            log.warning(msg)
+            return False, msg
 
         current = result["current"]
+        self._host_now_pending = True
 
         # CRITICAL: everything from here on is wrapped in try/finally. If
         # ANYTHING goes wrong we MUST still release the host claim in the
@@ -119,12 +148,15 @@ class SessionController:
                 update_status_text("Syncing your save...")
             self.sync_down_if_needed(current.get("save_key"))
 
+            log.info("Host claimed. Waiting for you to start %s...", self.adapter.display_name)
             if update_status_text:
-                update_status_text(f"Launching {self.adapter.display_name}...")
-            self.adapter.launch()
-            if not self.adapter.wait_for_start():
-                log.warning("%s didn't seem to start within the timeout.", self.adapter.display_name)
-                return  # falls through to finally, which releases the claim
+                update_status_text(
+                    f"Host claimed — start {self.adapter.display_name} now (Play Now, or launch it yourself)."
+                )
+            if not self.adapter.wait_for_start(timeout=self.HOST_NOW_WAIT_SECONDS):
+                msg = f"{self.adapter.display_name} wasn't started in time — host claim released."
+                log.warning(msg)
+                return False, msg  # falls through to finally, which releases the claim
 
             log.info(
                 "You're hosting as '%s'. Friends can join you. This app "
@@ -180,6 +212,7 @@ class SessionController:
             )
 
         finally:
+            self._host_now_pending = False
             if uploaded_successfully:
                 self.coordinator.release_host(save_key=uploaded_key)
                 self.local_record.write(uploaded_key)
@@ -192,6 +225,10 @@ class SessionController:
             else:
                 self.coordinator.release_host()
                 log.info("Host slot released (no upload happened this time).")
+
+        if uploaded_successfully:
+            return True, f"Session ended — save uploaded as '{uploaded_key}'."
+        return False, "Session ended without a successful upload — see log for details."
 
     def force_upload_current_save(self) -> tuple[bool, str]:
         """Uploads whatever's currently in the save folder as a new
@@ -282,7 +319,13 @@ class SessionController:
             return True, "Local save is up to date with the latest cloud version."
         return False, "Download failed — see log for details."
 
-    def run_loop(self, update_status_text=None, notify_desktop=None, set_hosting_active=None):
+    def run_loop(self, update_status_text=None, notify_desktop=None):
+        """Purely passive now: reports who's hosting (and notifies once
+        per new host), and self-heals a stale claim left over from a
+        crashed previous run. Doesn't drive Play Now or Host Now itself --
+        both act immediately on click instead of going through this poll
+        loop, since neither needs to wait for "the right moment" the way
+        the old single-button auto-host flow did."""
         last_notified_host = None  # tracks who we've already notified about,
         # so we only pop a notification ONCE per session start, not every
         # poll cycle while that person keeps hosting.
@@ -295,13 +338,18 @@ class SessionController:
                     status.get("hosting")
                     and status.get("host_name") == self.player_name
                     and not self.adapter.is_running()
+                    and not self._host_now_pending
                 ):
                     # This is OUR OWN claim, but the game isn't actually
-                    # running on this machine -- a previous run crashed, was
+                    # running on this machine, AND no Host Now call in this
+                    # process is actively managing it (that flag covers the
+                    # legitimate wait-for-you-to-start-the-game window,
+                    # which can take minutes and looks identical to this
+                    # otherwise) -- a previous run crashed, was
                     # force-closed, or the PC slept/lost power before it
                     # could release the claim. Safe to auto-clear: if it
-                    # were genuinely still hosting, is_running() would be
-                    # True.
+                    # were genuinely still active, one of those two would
+                    # be true.
                     log.warning(
                         "Found a stale host claim from a previous run (no %s "
                         "process is actually running). Auto-releasing it.",
@@ -328,55 +376,19 @@ class SessionController:
                             f"{host_name} started hosting — open the game to join!{code_part}",
                         )
                     last_notified_host = host_name
-
-                    # Play Now while someone else is hosting just opens the
-                    # game so you can join with the code above -- it never
-                    # claims host or touches your local save (joining never
-                    # does; only the host's save gets synced). Deliberately
-                    # NOT queued for later: actually joining still needs you
-                    # at the keyboard once the game opens, so there'd be
-                    # nothing for an unattended auto-launch to accomplish
-                    # once they stop hosting -- worse, it would also grab
-                    # the coordinator's host claim with no one there to
-                    # finish starting a world, leaving friends looking at a
-                    # "hosting" status with no join code ever showing up.
-                    if self.play_requested.is_set():
-                        self.play_requested.clear()
-                        if host_name != self.player_name:
-                            log.info("Join requested -- launching %s...", self.adapter.display_name)
-                            if update_status_text:
-                                update_status_text(f"Launching {self.adapter.display_name} to join {host_name}...")
-                            self.adapter.launch()
-                elif self.play_requested.is_set():
-                    last_notified_host = None  # reset so the next host triggers a fresh notification
-                    self.play_requested.clear()
-                    if update_status_text:
-                        update_status_text("No host — claiming and starting...")
-                    if set_hosting_active:
-                        set_hosting_active(True)
-                    try:
-                        self.become_host_and_play(update_status_text=update_status_text)
-                    finally:
-                        if set_hosting_active:
-                            set_hosting_active(False)
-                    if update_status_text:
-                        update_status_text("Session ended. Click 'Play Now' to host again.")
                 else:
                     last_notified_host = None
-                    log.info("No one hosting. Waiting for 'Play Now' to be clicked.")
+                    log.info("No one hosting.")
                     update_msg = self.update_checker.check()
                     if update_status_text:
                         if update_msg:
-                            update_status_text(f"Idle — Play Now to host | {update_msg}")
+                            update_status_text(f"Idle | {update_msg}")
                         else:
-                            update_status_text("Idle — click 'Play Now' to host")
+                            update_status_text("Idle")
 
             except requests.RequestException as e:
                 log.error("Coordinator unreachable: %s", e)
                 if update_status_text:
                     update_status_text("Coordinator unreachable — retrying...")
 
-            # Waits up to the normal poll interval, but wakes immediately
-            # if "Play Now" sets play_requested mid-wait -- same polling
-            # cadence when idle, no lag when a click needs acting on.
-            self.play_requested.wait(timeout=self.poll_interval_seconds)
+            time.sleep(self.poll_interval_seconds)

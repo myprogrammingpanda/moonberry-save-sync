@@ -1,10 +1,10 @@
 # Moonberry Save-Sync
 
 A small desktop app that keeps a shared Valheim world in sync between
-friends: whoever opens the app can see if someone's already hosting, or
-claim the host slot themselves, launch the game, and have their save
-automatically uploaded and shared when they're done. Built to be
-extendable to other games later without changing how it works today.
+friends: whoever opens the app can see if someone's already hosting, claim
+the host slot themselves, and have their save automatically uploaded and
+shared when they're done. Built to be extendable to other games later
+without changing how it works today.
 
 ## Setup (one-time)
 
@@ -19,10 +19,8 @@ extendable to other games later without changing how it works today.
    ```
    pip install -r requirements.txt
    ```
-4. Run the app:
-   ```
-   python main.py
-   ```
+4. Run the app by double-clicking **`run.bat`** in that folder (or from a
+   terminal: `python main.py`).
    The **first time** you run it, a setup window will appear asking for
    a few values (coordinator URL, shared secret, storage credentials,
    etc.) — get these from whoever's running the group's coordinator/bot
@@ -32,16 +30,26 @@ extendable to other games later without changing how it works today.
 ## Using it
 
 - **Status**: the app shows who's currently hosting (if anyone), live.
-- **Play Now**: claims the host slot, downloads the latest save, and
-  launches the game for you. When you close the game, your save is
-  automatically zipped and uploaded for everyone else.
+- **Host Now**: claims the host slot, downloads the latest save, then
+  waits for you to actually start the game yourself (click Play Now, or
+  launch it any other way) — it doesn't open the game for you. When you
+  close the game, your save is automatically zipped and uploaded for
+  everyone else. Refuses with a clear error if the game's already
+  running, since syncing a save the game already has open isn't safe.
+- **Play Now**: just opens the game — nothing more. Use it to join a
+  friend who's already hosting (the join code is shown right in the
+  status line), or to actually start playing after clicking Host Now.
+  Click **Host Now before Play Now** if you want your save synced before
+  you play — once the game's open, syncing can no longer happen for that
+  session.
 - **Manual Sync** (for when you played outside the app, e.g. solo):
   - **Force Upload Current Save** — uploads whatever's currently in your
     save folder as a new version. Fails cleanly if someone's actively
-    hosting instead of overwriting anything.
+    hosting, or if the game is currently open, instead of overwriting
+    anything.
   - **Force Download Latest** — pulls down the latest cloud save, after
     confirming, with a backup of your current local save kept
-    automatically.
+    automatically. Also refuses while the game is open.
 - **File → Settings**: change any of the setup values later (bucket,
   secrets, world name, etc.) without ever touching a config file by
   hand. Restart the app afterward for changes to take effect.
@@ -51,7 +59,7 @@ extendable to other games later without changing how it works today.
 
 - **"config.json not found" / setup window keeps reappearing**: make
   sure you clicked **Save** in the setup window, not just closed it.
-- **Nothing happens when you click Play Now**: check the Activity Log
-  at the bottom of the window — it logs exactly what's happening (or
-  why something failed) at every step.
+- **Nothing happens when you click Host Now or Play Now**: check the
+  Activity Log at the bottom of the window — it logs exactly what's
+  happening (or why something failed) at every step.
 - Still stuck? Ask whoever set up the group's coordinator/bot.

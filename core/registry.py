@@ -36,7 +36,7 @@ def build_game_controllers(
         adapter = adapter_cls(game_cfg)
 
         # The active game always gets a controller, even with no local save
-        # yet -- Play Now downloads the save fresh on first host/join, same
+        # yet -- Host Now downloads the save fresh on a first claim, same
         # as before multi-game support existed. Other games are only worth
         # a Manual Sync row if there's actually something on disk to sync.
         if game_id != active_game_id and not adapter.has_local_save():
