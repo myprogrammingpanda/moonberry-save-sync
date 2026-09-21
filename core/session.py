@@ -94,11 +94,11 @@ class SessionController:
             log.info("Local save is already up to date ('%s').", local_save_key)
             return True
 
-    def become_host_and_play(self):
+    def become_host_and_play(self, update_status_text=None):
         with self._sync_lock:
-            self._become_host_and_play_locked()
+            self._become_host_and_play_locked(update_status_text)
 
-    def _become_host_and_play_locked(self):
+    def _become_host_and_play_locked(self, update_status_text=None):
         log.info("No one is hosting. Attempting to claim host...")
         result = self.coordinator.claim_host()
         if not result.get("ok"):
@@ -115,8 +115,12 @@ class SessionController:
         uploaded_successfully = False
         uploaded_key = None
         try:
+            if update_status_text:
+                update_status_text("Syncing your save...")
             self.sync_down_if_needed(current.get("save_key"))
 
+            if update_status_text:
+                update_status_text(f"Launching {self.adapter.display_name}...")
             self.adapter.launch()
             if not self.adapter.wait_for_start():
                 log.warning("%s didn't seem to start within the timeout.", self.adapter.display_name)
@@ -127,6 +131,8 @@ class SessionController:
                 "will auto-sync the save when you close the game.",
                 self.player_name,
             )
+            if update_status_text:
+                update_status_text(f"You're hosting as '{self.player_name}' — playing now.")
 
             log.info("Watching for a join code to share...")
             join_code = self.adapter.scrape_join_code()
@@ -134,6 +140,8 @@ class SessionController:
             if join_code:
                 self.coordinator.announce_join_code(join_code)
                 log.info("Shared join code '%s' with the group.", join_code)
+                if update_status_text:
+                    update_status_text(f"Hosting as '{self.player_name}' — join code: {join_code}")
             else:
                 log.info(
                     "No join code was found before the session ended (or this "
@@ -144,6 +152,8 @@ class SessionController:
 
             self.adapter.wait_for_exit()
             log.info("%s has closed.", self.adapter.display_name)
+            if update_status_text:
+                update_status_text(f"{self.adapter.display_name} closed — uploading your save...")
 
             out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}.zip"
 
@@ -272,7 +282,7 @@ class SessionController:
             return True, "Local save is up to date with the latest cloud version."
         return False, "Download failed — see log for details."
 
-    def run_loop(self, update_status_text=None, notify_desktop=None):
+    def run_loop(self, update_status_text=None, notify_desktop=None, set_hosting_active=None):
         last_notified_host = None  # tracks who we've already notified about,
         # so we only pop a notification ONCE per session start, not every
         # poll cycle while that person keeps hosting.
@@ -342,7 +352,13 @@ class SessionController:
                     self.play_requested.clear()
                     if update_status_text:
                         update_status_text("No host — claiming and starting...")
-                    self.become_host_and_play()
+                    if set_hosting_active:
+                        set_hosting_active(True)
+                    try:
+                        self.become_host_and_play(update_status_text=update_status_text)
+                    finally:
+                        if set_hosting_active:
+                            set_hosting_active(False)
                     if update_status_text:
                         update_status_text("Session ended. Click 'Play Now' to host again.")
                 else:

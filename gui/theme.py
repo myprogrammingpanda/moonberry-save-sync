@@ -139,6 +139,11 @@ def build_stylesheet(palette: dict) -> str:
         background: {p['accent']};
         border-color: {p['fg']};
     }}
+    QPushButton[role="primary"]:disabled {{
+        background: {p['border']};
+        color: {p['dim']};
+        border-color: {p['border']};
+    }}
     QLineEdit, QComboBox {{
         background: {p['entry_bg']};
         color: {p['entry_fg']};

@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
     # thread onto the thread the receiving QObject lives on).
     status_changed = Signal(str)
     desktop_notify = Signal(str, str)
+    hosting_active_changed = Signal(bool)
 
     def __init__(self, game_controllers: dict, active_game_id: str, app_version: str):
         super().__init__()
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
 
         self.status_changed.connect(self.status_label.setText)
         self.desktop_notify.connect(self._on_desktop_notify)
+        self.hosting_active_changed.connect(self._on_hosting_active_changed)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -179,6 +181,15 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         os._exit(0)
 
+    def _on_hosting_active_changed(self, active: bool):
+        # Disabled for the whole claim-to-release span of a hosting
+        # session, not just while the game process is open -- clicking
+        # Play Now during the claim/sync-down or zip/upload phases (game
+        # not running yet, or not running anymore, but the session is
+        # still very much in progress) would otherwise silently queue
+        # another auto-host attempt for right after this one finishes.
+        self.play_button.setEnabled(not active)
+
     # -- callbacks handed to SessionController.run_loop; called from the
     # background poll thread, so they only ever go through Qt signals --
 
@@ -207,7 +218,7 @@ class MainWindow(QMainWindow):
     def run_session_loop(self):
         t = threading.Thread(
             target=self.controller.run_loop,
-            args=(self.status_changed.emit, self.desktop_notify.emit),
+            args=(self.status_changed.emit, self.desktop_notify.emit, self.hosting_active_changed.emit),
             daemon=True,
         )
         t.start()
