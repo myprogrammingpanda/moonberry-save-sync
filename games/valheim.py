@@ -80,6 +80,12 @@ class ValheimAdapter(GameAdapter):
 
         return "files", [folder / f"{name}.db", folder / f"{name}.fwl"]
 
+    def has_local_save(self) -> bool:
+        kind, target = self._get_world_target()
+        if kind == "folder":
+            return target.is_dir()
+        return all(f.exists() for f in target)
+
     def backup_local_save(self, backup_dir: Path) -> None:
         """Keep a timestamped copy of the current local save before
         overwriting, just in case something goes wrong with a cloud sync.

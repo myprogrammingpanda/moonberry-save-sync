@@ -82,7 +82,7 @@ class SessionController:
                 local_save_key,
             )
             self.adapter.backup_local_save(self.app_dir / "local_backups")
-            tmp_zip = self.app_dir / "_incoming_save.zip"
+            tmp_zip = self.app_dir / f"_incoming_save_{self.adapter.game_id}.zip"
             if self.storage.download_save(tmp_zip, effective_cloud_key):
                 self.adapter.unzip_save(tmp_zip)
                 tmp_zip.unlink(missing_ok=True)
@@ -145,7 +145,7 @@ class SessionController:
             self.adapter.wait_for_exit()
             log.info("%s has closed.", self.adapter.display_name)
 
-            out_zip = self.app_dir / "_outgoing_save.zip"
+            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}.zip"
 
             zip_start = time.time()
             log.info("Zipping save...")
@@ -193,6 +193,8 @@ class SessionController:
         players -- the coordinator's /claim is a strict atomic check,
         not an identity check). Launching the game is skipped entirely;
         this is upload-only."""
+        if self.adapter.is_running():
+            return False, f"{self.adapter.display_name} is currently running — close it first."
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
@@ -212,7 +214,7 @@ class SessionController:
         uploaded_successfully = False
         uploaded_key = None
         try:
-            out_zip = self.app_dir / "_outgoing_save.zip"
+            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}.zip"
             log.info("Zipping current save for manual upload...")
             self.adapter.zip_save(out_zip)
             uploaded_key = self.storage.new_save_key()
@@ -242,6 +244,8 @@ class SessionController:
         backup-before-overwrite logic -- the same protection a normal
         sync gets. No claim is taken: this only reads the coordinator's
         status and the storage bucket, neither of which is exclusive."""
+        if self.adapter.is_running():
+            return False, f"{self.adapter.display_name} is currently running — close it first."
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
@@ -314,6 +318,25 @@ class SessionController:
                             f"{host_name} started hosting — open the game to join!{code_part}",
                         )
                     last_notified_host = host_name
+
+                    # Play Now while someone else is hosting just opens the
+                    # game so you can join with the code above -- it never
+                    # claims host or touches your local save (joining never
+                    # does; only the host's save gets synced). Deliberately
+                    # NOT queued for later: actually joining still needs you
+                    # at the keyboard once the game opens, so there'd be
+                    # nothing for an unattended auto-launch to accomplish
+                    # once they stop hosting -- worse, it would also grab
+                    # the coordinator's host claim with no one there to
+                    # finish starting a world, leaving friends looking at a
+                    # "hosting" status with no join code ever showing up.
+                    if self.play_requested.is_set():
+                        self.play_requested.clear()
+                        if host_name != self.player_name:
+                            log.info("Join requested -- launching %s...", self.adapter.display_name)
+                            if update_status_text:
+                                update_status_text(f"Launching {self.adapter.display_name} to join {host_name}...")
+                            self.adapter.launch()
                 elif self.play_requested.is_set():
                     last_notified_host = None  # reset so the next host triggers a fresh notification
                     self.play_requested.clear()

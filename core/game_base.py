@@ -51,6 +51,15 @@ class GameAdapter(ABC):
     # business -- core/ only ever deals in zip files) --
 
     @abstractmethod
+    def has_local_save(self) -> bool:
+        """Whether this game's save actually exists on disk yet, given its
+        current config. Used to decide which configured games are
+        "supported" for multi-game manual sync -- a game the user has
+        configured but never played on this machine shouldn't get a
+        Force Upload/Download row."""
+        ...
+
+    @abstractmethod
     def backup_local_save(self, backup_dir: Path) -> None: ...
 
     @abstractmethod

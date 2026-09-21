@@ -1,153 +1,144 @@
-"""Plain-Tkinter GUI, replacing the old system tray icon. Runs the
-SessionController's poll loop on a background thread and marshals its
-callbacks into the Tk main thread via a queue, since Tkinter widgets are not
-thread-safe."""
+"""PySide6 GUI, replacing the old Tkinter window (and, before that, the
+original system tray icon). Every "supported" game (configured, with a
+local save on disk) gets its own SessionController and its own Manual Sync
+row -- but only the active game's controller runs run_loop() and drives the
+top status line / Play Now, since hosting stays limited to one game at a
+time, globally."""
 
+import ctypes
 import json
 import logging
 import os
-import queue
 import sys
 import threading
-import tkinter as tk
-from tkinter import font as tkfont
-from tkinter import messagebox, scrolledtext, ttk
 
-from gui.theme import apply_menu_colors, apply_palette, resolve_theme, set_titlebar_theme
-from gui.toggle_switch import ToggleSwitch
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QTextCharFormat
+from PySide6.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
-_LOG_LEVEL_TAGS = ("WARNING", "ERROR", "CRITICAL")
+from gui.log_handler import QtLogHandler
+from gui.theme import apply_theme, resolve_theme, set_titlebar_theme
+from gui.widgets.game_sync_row import GameSyncRow
+from gui.widgets.toggle_switch import ToggleSwitch
+
+_LOG_COLOR_KEYS = {"WARNING": "warning", "ERROR": "error", "CRITICAL": "error"}
 
 
-class _QueueLogHandler(logging.Handler):
-    """Pushes formatted log lines into a thread-safe queue so the Tk main
-    loop can display them without touching widgets from a background
-    thread."""
+class MainWindow(QMainWindow):
+    # SessionController.run_loop calls its update_status_text/notify_desktop
+    # callbacks from a background thread -- these signals are how that
+    # reaches the GUI thread safely (Qt marshals a signal emitted from any
+    # thread onto the thread the receiving QObject lives on).
+    status_changed = Signal(str)
+    desktop_notify = Signal(str, str)
 
-    def __init__(self, ui_queue: queue.Queue):
+    def __init__(self, game_controllers: dict, active_game_id: str, app_version: str):
         super().__init__()
-        self.ui_queue = ui_queue
-
-    def emit(self, record):
-        self.ui_queue.put(("log", self.format(record)))
-
-
-class App:
-    def __init__(self, controller, app_version: str):
-        self.controller = controller
+        self.game_controllers = game_controllers
+        self.active_game_id = active_game_id
+        self.controller = game_controllers[active_game_id]
         self.app_version = app_version
-        self.ui_queue: queue.Queue = queue.Queue()
 
-        self.root = tk.Tk()
-        self.root.title(f"Moonberry Save-Sync — {controller.adapter.display_name}")
-        self.root.geometry("640x460")
-        self.root.minsize(480, 320)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.setWindowTitle(f"Moonberry Save-Sync — {self.controller.adapter.display_name}")
+        self.resize(680, 540)
+        self.setMinimumSize(520, 380)
 
-        self.style = ttk.Style(self.root)
         self.theme_name = resolve_theme(self._read_theme_pref())
-        self.palette = apply_palette(self.root, self.style, self.theme_name)
-        set_titlebar_theme(self.root, self.theme_name == "dark")
+        self.colors = apply_theme(QApplication.instance(), self.theme_name)
 
-        # A themed ttk.Menubutton row standing in for a real menu bar --
-        # Windows draws an actual root-level tk.Menu bar with native
-        # rendering that ignores color options entirely, so a native menu
-        # bar can never follow dark mode. This can.
-        self.file_menu = tk.Menu(self.root, tearoff=False)
-        self.file_menu.add_command(label="Settings...", command=self._open_settings)
+        self._build_menu_bar()
+        self._build_central_widget()
 
-        menubar_row = ttk.Frame(self.root)
-        menubar_row.pack(fill="x", side="top")
-        ttk.Menubutton(
-            menubar_row, text="File", menu=self.file_menu, style="Menubar.TMenubutton"
-        ).pack(side="left")
+        self._log_handler = QtLogHandler()
+        self._log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        self._log_handler.log_line.connect(self._append_log_line)
+        logging.getLogger("moonberry-sync").addHandler(self._log_handler)
 
-        self.dark_switch = ToggleSwitch(
-            menubar_row, initial=(self.theme_name == "dark"),
-            on_toggle=self._on_dark_switch_toggled, palette=self.palette,
-        )
-        self.dark_switch.pack(side="right", padx=(0, 10), pady=2)
-        ttk.Label(menubar_row, text="Dark Mode").pack(side="right", pady=2)
+        self.status_changed.connect(self.status_label.setText)
+        self.desktop_notify.connect(self._on_desktop_notify)
 
-        self._apply_menu_theme()
+    def showEvent(self, event):
+        super().showEvent(event)
+        set_titlebar_theme(self, self.theme_name == "dark")
 
-        status_font = tkfont.Font(family="Segoe UI", size=11, weight="bold")
-        log_font = tkfont.Font(family="Consolas", size=9)
+    # -- construction --
 
-        header = ttk.Frame(self.root, padding=(14, 12, 14, 8))
-        header.pack(fill="x")
+    def _build_menu_bar(self):
+        menubar = self.menuBar()
+        file_menu = menubar.addMenu("File")
+        file_menu.addAction("Settings...", self._open_settings)
 
-        self.status_var = tk.StringVar(value="Starting...")
-        ttk.Label(
-            header,
-            textvariable=self.status_var,
-            anchor="w",
-            wraplength=580,
-            justify="left",
-            font=status_font,
-        ).pack(fill="x", pady=(0, 10))
+        corner = QWidget()
+        corner_layout = QHBoxLayout(corner)
+        corner_layout.setContentsMargins(0, 0, 10, 0)
+        corner_layout.addWidget(QLabel("Dark Mode"))
+        self.dark_switch = ToggleSwitch(initial=(self.theme_name == "dark"), palette=self.colors)
+        self.dark_switch.toggled.connect(self._on_dark_toggled)
+        corner_layout.addWidget(self.dark_switch)
+        menubar.setCornerWidget(corner, Qt.TopRightCorner)
 
-        self.play_button = ttk.Button(header, text="Play Now", command=self._on_play_now)
-        self.play_button.pack(anchor="w")
+    def _build_central_widget(self):
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
 
-        sync_frame = ttk.LabelFrame(self.root, text="Manual Sync", padding=(10, 8))
-        sync_frame.pack(fill="x", padx=14, pady=(0, 4))
+        self.status_label = QLabel("Starting...")
+        self.status_label.setProperty("role", "status")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
 
-        self.upload_button = ttk.Button(
-            sync_frame, text="Force Upload Current Save", command=self._on_force_upload
-        )
-        self.upload_button.pack(side="left")
+        self.play_button = QPushButton("Play Now")
+        self.play_button.setProperty("role", "primary")
+        self.play_button.clicked.connect(self._on_play_now)
+        play_row = QHBoxLayout()
+        play_row.addWidget(self.play_button)
+        play_row.addStretch()
+        layout.addLayout(play_row)
 
-        self.download_button = ttk.Button(
-            sync_frame, text="Force Download Latest", command=self._on_force_download
-        )
-        self.download_button.pack(side="left", padx=(8, 0))
+        sync_group = QGroupBox("Manual Sync")
+        sync_layout = QVBoxLayout(sync_group)
+        for game_id in self._ordered_game_ids():
+            controller = self.game_controllers[game_id]
+            row = GameSyncRow(
+                game_id,
+                controller.adapter.display_name,
+                controller,
+                is_active=(game_id == self.active_game_id),
+            )
+            sync_layout.addWidget(row)
+        layout.addWidget(sync_group)
 
-        log_frame = ttk.LabelFrame(self.root, text="Activity Log", padding=(8, 6))
-        log_frame.pack(fill="both", expand=True, padx=14, pady=(4, 14))
+        log_group = QGroupBox("Activity Log")
+        log_layout = QVBoxLayout(log_group)
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setProperty("role", "log")
+        log_layout.addWidget(self.log_view)
+        layout.addWidget(log_group, stretch=1)
 
-        self.log_text = scrolledtext.ScrolledText(
-            log_frame, state="disabled", height=16, font=log_font, wrap="word", borderwidth=0,
-        )
-        self.log_text.pack(fill="both", expand=True)
-        self._apply_log_colors()
+        self.setCentralWidget(central)
 
-        handler = _QueueLogHandler(self.ui_queue)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        logging.getLogger("moonberry-sync").addHandler(handler)
+    def _ordered_game_ids(self) -> list[str]:
+        others = sorted(g for g in self.game_controllers if g != self.active_game_id)
+        return [self.active_game_id] + others
 
-        self.root.after(100, self._poll_queue)
+    # -- actions --
 
     def _on_play_now(self):
         self.controller.play_requested.set()
-        self.ui_queue.put(("status", "Play requested — will start shortly..."))
-
-    def _on_force_upload(self):
-        self.upload_button.configure(state="disabled")
-        self.ui_queue.put(("status", "Force-uploading current save..."))
-
-        def worker():
-            success, msg = self.controller.force_upload_current_save()
-            self.ui_queue.put(("sync_done", ("upload", success, msg)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_force_download(self):
-        if not messagebox.askyesno(
-            "Force Download Latest",
-            "This will overwrite your current local save. A backup will be kept. Continue?",
-            parent=self.root,
-        ):
-            return
-
-        self.download_button.configure(state="disabled")
-        self.ui_queue.put(("status", "Force-downloading latest save..."))
-
-        def worker():
-            success, msg = self.controller.force_download_latest()
-            self.ui_queue.put(("sync_done", ("download", success, msg)))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self.status_changed.emit("Play requested — will start shortly...")
 
     def _read_theme_pref(self) -> str:
         try:
@@ -156,26 +147,11 @@ class App:
         except (OSError, json.JSONDecodeError):
             return "system"
 
-    def _apply_menu_theme(self):
-        apply_menu_colors(self.file_menu, self.palette)
-
-    def _apply_log_colors(self):
-        self.log_text.configure(
-            background=self.palette["log_bg"],
-            foreground=self.palette["log_fg"],
-            insertbackground=self.palette["log_fg"],
-        )
-        for level in _LOG_LEVEL_TAGS:
-            color = self.palette["error"] if level in ("ERROR", "CRITICAL") else self.palette["warning"]
-            self.log_text.tag_config(level, foreground=color)
-
-    def _on_dark_switch_toggled(self, is_dark: bool):
+    def _on_dark_toggled(self, is_dark: bool):
         self.theme_name = "dark" if is_dark else "light"
-        self.palette = apply_palette(self.root, self.style, self.theme_name)
-        set_titlebar_theme(self.root, self.theme_name == "dark")
-        self._apply_menu_theme()
-        self._apply_log_colors()
-        self.dark_switch.set_palette(self.palette)
+        self.colors = apply_theme(QApplication.instance(), self.theme_name)
+        set_titlebar_theme(self, self.theme_name == "dark")
+        self.dark_switch.set_palette(self.colors)
 
         config_path = self.controller.app_dir / "config.json"
         try:
@@ -187,79 +163,66 @@ class App:
 
     def _open_settings(self):
         from games._discovery import discover_adapters
-        from gui.settings import run_setup_wizard
+        from gui.settings import SettingsDialog
 
         config_path = self.controller.app_dir / "config.json"
         adapters = discover_adapters()
-        if run_setup_wizard(config_path, adapters, parent=self.root):
-            messagebox.showinfo(
+        dialog = SettingsDialog(config_path, adapters, parent=self)
+        dialog.exec()
+        if dialog.saved:
+            QMessageBox.information(
+                self,
                 "Settings saved",
                 "Settings saved. Restart the app for changes to take effect.",
-                parent=self.root,
             )
 
-    def _on_close(self):
+    def closeEvent(self, event):
         os._exit(0)
 
     # -- callbacks handed to SessionController.run_loop; called from the
-    # background thread, so they only ever touch the thread-safe queue --
+    # background poll thread, so they only ever go through Qt signals --
 
-    def _update_status(self, text: str):
-        self.ui_queue.put(("status", text))
+    def _append_log_line(self, line: str, level: str):
+        color_key = _LOG_COLOR_KEYS.get(level)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(self.colors[color_key] if color_key else self.colors["log_fg"]))
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        cursor.insertText(line + "\n", fmt)
+        self.log_view.setTextCursor(cursor)
+        self.log_view.ensureCursorVisible()
 
-    def _notify_desktop(self, title: str, message: str):
-        # Plain Tkinter has no built-in toast notification without extra
-        # dependencies. Surface it prominently in the status line and log,
-        # plus a system beep and (on Windows) a taskbar flash, so it's
-        # still noticeable without needing anything beyond the stdlib.
-        self.ui_queue.put(("status", f"{title}: {message}"))
-        self.ui_queue.put(("alert", None))
-
-    def _poll_queue(self):
-        try:
-            while True:
-                kind, payload = self.ui_queue.get_nowait()
-                if kind == "status":
-                    self.status_var.set(payload)
-                elif kind == "log":
-                    tag = next((lvl for lvl in _LOG_LEVEL_TAGS if f"[{lvl}]" in payload), None)
-                    self.log_text.configure(state="normal")
-                    self.log_text.insert("end", payload + "\n", tag if tag else ())
-                    self.log_text.see("end")
-                    self.log_text.configure(state="disabled")
-                elif kind == "alert":
-                    self._flash_attention()
-                elif kind == "sync_done":
-                    action, success, msg = payload
-                    button = self.upload_button if action == "upload" else self.download_button
-                    button.configure(state="normal")
-                    self.status_var.set(msg)
-                    if success:
-                        messagebox.showinfo("Success", msg, parent=self.root)
-                    else:
-                        messagebox.showerror("Failed", msg, parent=self.root)
-        except queue.Empty:
-            pass
-        self.root.after(100, self._poll_queue)
+    def _on_desktop_notify(self, title: str, message: str):
+        self.status_changed.emit(f"{title}: {message}")
+        self._flash_attention()
 
     def _flash_attention(self):
-        try:
-            self.root.bell()
-        except Exception:
-            pass
+        QApplication.beep()
         if sys.platform == "win32":
             try:
-                import ctypes
-
-                ctypes.windll.user32.FlashWindow(self.root.winfo_id(), True)
+                ctypes.windll.user32.FlashWindow(int(self.winId()), True)
             except Exception:
                 pass
 
-    def run(self):
+    def run_session_loop(self):
         t = threading.Thread(
             target=self.controller.run_loop,
-            args=(self._update_status, self._notify_desktop),
+            args=(self.status_changed.emit, self.desktop_notify.emit),
             daemon=True,
         )
         t.start()
-        self.root.mainloop()
+
+
+class App:
+    """Thin wrapper matching main.py's expected App(...).run() shape --
+    owns the QApplication instance, since one must exist before any QWidget
+    (including MainWindow) is constructed."""
+
+    def __init__(self, game_controllers: dict, active_game_id: str, app_version: str):
+        self.qapp = QApplication.instance() or QApplication(sys.argv)
+        self.window = MainWindow(game_controllers, active_game_id, app_version)
+
+    def run(self):
+        self.window.show()
+        self.window.run_session_loop()
+        self.qapp.exec()

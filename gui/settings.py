@@ -1,15 +1,32 @@
-"""Settings/setup form -- lets the config.json values be entered and edited
+"""Settings/setup form -- lets config.json values be entered and edited
 through a GUI instead of hand-editing JSON. Shown automatically on first run
-(no config.json yet), and reachable afterward from the main window's
-Settings button. Purely a form over config.json's shape; knows nothing about
-any specific game beyond what GameAdapter.config_fields declares."""
+(no config.json yet), and reachable afterward from the main window's File >
+Settings. Purely a form over config.json's shape; knows nothing about any
+specific game beyond what GameAdapter.config_fields declares."""
 
 import json
-import tkinter as tk
+import sys
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
 
-from gui.theme import apply_palette, resolve_theme, set_titlebar_theme
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+from gui.theme import apply_theme, resolve_theme, set_titlebar_theme
 
 # (key, label, required, secret)
 _TOP_LEVEL_FIELDS = [
@@ -37,55 +54,59 @@ _MISC_FIELDS = [
     ("github_repo", "GitHub repo (owner/name, for update checks)", False, False),
 ]
 
-
-def _apply_theme(widget, theme_pref: str):
-    style = ttk.Style(widget)
-    theme_name = resolve_theme(theme_pref)
-    palette = apply_palette(widget, style, theme_name)
-    return style, palette
+_ADVANCED_FIELDS = [
+    ("poll_interval_seconds", "Poll interval (seconds)", 30),
+    ("max_saved_versions", "Saved versions to keep", 5),
+]
 
 
-class _SettingsForm:
-    def __init__(self, win, adapters: dict, existing_cfg: dict):
-        self.win = win
+class SettingsDialog(QDialog):
+    def __init__(self, config_path: Path, adapters: dict, parent=None):
+        super().__init__(parent)
+        self.config_path = config_path
         self.adapters = adapters
-        self.existing_cfg = existing_cfg
-        self.entries: dict[str, tk.StringVar] = {}
         self.saved = False
-        self._show_secrets = tk.BooleanVar(value=False)
+        self.entries: dict[str, QLineEdit] = {}
+        self._secret_entries: list[QLineEdit] = []
 
-        _style, palette = _apply_theme(win, existing_cfg.get("theme", "system"))
-        set_titlebar_theme(win, resolve_theme(existing_cfg.get("theme", "system")) == "dark")
-        win.title("Moonberry Save-Sync — Settings")
-        win.minsize(520, 200)
+        self.existing_cfg = {}
+        if config_path.exists():
+            try:
+                self.existing_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                self.existing_cfg = {}
 
-        outer = ttk.Frame(win, padding=14)
-        outer.pack(fill="both", expand=True)
+        self.theme_name = resolve_theme(self.existing_cfg.get("theme", "system"))
+        self.colors = apply_theme(QApplication.instance(), self.theme_name)
 
-        canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0, background=palette["bg"])
-        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        self.scroll_frame = ttk.Frame(canvas)
-        self.scroll_frame.bind(
-            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self.setWindowTitle("Moonberry Save-Sync — Settings")
+        self.setMinimumSize(560, 480)
+        self.resize(560, 640)
+
+        outer = QVBoxLayout(self)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        self.content_layout = QVBoxLayout(content)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, stretch=1)
 
         game_ids = sorted(adapters)
-        default_game = existing_cfg.get("active_game") if existing_cfg.get("active_game") in adapters else (game_ids[0] if game_ids else "")
-        self.active_game_var = tk.StringVar(value=default_game)
-
-        game_row = ttk.Frame(self.scroll_frame)
-        game_row.pack(fill="x", pady=(0, 10))
-        ttk.Label(game_row, text="Game", width=28).pack(side="left")
-        game_combo = ttk.Combobox(
-            game_row, textvariable=self.active_game_var, values=game_ids,
-            state="readonly", width=30,
+        default_game = (
+            self.existing_cfg.get("active_game")
+            if self.existing_cfg.get("active_game") in adapters
+            else (game_ids[0] if game_ids else "")
         )
-        game_combo.pack(side="left", fill="x", expand=True)
-        game_combo.bind("<<ComboboxSelected>>", lambda e: self._rebuild_game_section())
+
+        game_row = QFormLayout()
+        self.game_combo = QComboBox()
+        self.game_combo.addItems(game_ids)
+        if default_game:
+            self.game_combo.setCurrentText(default_game)
+        self.game_combo.currentTextChanged.connect(self._rebuild_game_section)
+        game_row.addRow("Game", self.game_combo)
+        self.content_layout.addLayout(game_row)
 
         self._section("Player", _TOP_LEVEL_FIELDS)
         self._section("Coordinator (Cloudflare Worker)", _COORDINATOR_FIELDS)
@@ -93,132 +114,148 @@ class _SettingsForm:
         self._section("Discord Notifications (optional)", _MOONBERRY_FIELDS)
         self._section("Updates (optional)", _MISC_FIELDS)
 
-        self.game_section = ttk.LabelFrame(self.scroll_frame, text="Game Settings", padding=10)
-        self.game_section.pack(fill="x", pady=(0, 10))
-        self._rebuild_game_section()
+        self.game_group = QGroupBox("Game Settings")
+        self.game_group_layout = QFormLayout(self.game_group)
+        self.content_layout.addWidget(self.game_group)
+        self._rebuild_game_section(default_game)
 
-        advanced = ttk.LabelFrame(self.scroll_frame, text="Advanced", padding=10)
-        advanced.pack(fill="x", pady=(0, 10))
-        self._field(advanced, "poll_interval_seconds", "Poll interval (seconds)", False, False)
-        self._field(advanced, "max_saved_versions", "Saved versions to keep", False, False)
+        advanced_group = QGroupBox("Advanced")
+        advanced_layout = QFormLayout(advanced_group)
+        for key, label, default in _ADVANCED_FIELDS:
+            entry = QLineEdit(str(self.existing_cfg.get(key, default)))
+            self.entries[key] = entry
+            advanced_layout.addRow(label, entry)
+        self.content_layout.addWidget(advanced_group)
 
-        show_check = ttk.Checkbutton(
-            self.scroll_frame, text="Show secret values", variable=self._show_secrets,
-            command=self._toggle_secret_visibility,
-        )
-        show_check.pack(anchor="w", pady=(0, 10))
+        self.show_secrets_check = QCheckBox("Show secret values")
+        self.show_secrets_check.toggled.connect(self._toggle_secret_visibility)
+        self.content_layout.addWidget(self.show_secrets_check)
 
-        button_row = ttk.Frame(win, padding=(14, 0, 14, 14))
-        button_row.pack(fill="x")
-        ttk.Button(button_row, text="Save", command=self._on_save).pack(side="right")
-        ttk.Button(button_row, text="Cancel", command=self._on_cancel).pack(side="right", padx=(0, 8))
+        self.content_layout.addStretch()
 
-    def _section(self, title, fields):
-        frame = ttk.LabelFrame(self.scroll_frame, text=title, padding=10)
-        frame.pack(fill="x", pady=(0, 10))
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self._on_cancel)
+        button_row.addWidget(cancel_button)
+        save_button = QPushButton("Save")
+        save_button.setProperty("role", "primary")
+        save_button.clicked.connect(self._on_save)
+        button_row.addWidget(save_button)
+        outer.addLayout(button_row)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        set_titlebar_theme(self, self.theme_name == "dark")
+
+    # -- section/field construction --
+
+    def _section(self, title: str, fields: list) -> None:
+        group = QGroupBox(title)
+        form = QFormLayout(group)
         for key, label, required, secret in fields:
-            self._field(frame, key, label, required, secret)
+            self._add_field(form, key, label, required, secret)
+        self.content_layout.addWidget(group)
 
-    def _field(self, parent, key, label, required, secret, kind="text"):
-        row = ttk.Frame(parent)
-        row.pack(fill="x", pady=2)
+    def _add_field(self, form: QFormLayout, key: str, label: str, required: bool, secret: bool, kind: str = "text"):
         label_text = f"{label} *" if required else label
-        ttk.Label(row, text=label_text, width=28, anchor="w").pack(side="left")
-
-        var = tk.StringVar(value=str(self.existing_cfg.get(key, "")))
-        self.entries[key] = var
-        show_char = "*" if secret else ""
-        entry = ttk.Entry(row, textvariable=var, show=show_char)
-        entry.pack(side="left", fill="x", expand=True)
+        entry = QLineEdit(str(self.existing_cfg.get(key, "")))
         if secret:
-            entry.secret = True  # tag for the show/hide toggle
+            entry.setEchoMode(QLineEdit.Password)
+            self._secret_entries.append(entry)
+        self.entries[key] = entry
 
+        if kind == "text":
+            form.addRow(label_text, entry)
+            return
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(entry)
+        browse = QPushButton("Browse...")
         if kind == "folder":
-            ttk.Button(
-                row, text="Browse...",
-                command=lambda v=var: self._browse_folder(v),
-            ).pack(side="left", padx=(6, 0))
-        elif kind == "file":
-            ttk.Button(
-                row, text="Browse...",
-                command=lambda v=var: self._browse_file(v),
-            ).pack(side="left", padx=(6, 0))
+            browse.clicked.connect(lambda: self._browse_folder(entry))
+        else:
+            browse.clicked.connect(lambda: self._browse_file(entry))
+        row_layout.addWidget(browse)
+        form.addRow(label_text, row)
 
-    def _browse_folder(self, var):
-        chosen = filedialog.askdirectory(initialdir=var.get() or None)
+    def _browse_folder(self, entry: QLineEdit):
+        chosen = QFileDialog.getExistingDirectory(self, "Select folder", entry.text() or "")
         if chosen:
-            var.set(chosen)
+            entry.setText(chosen)
 
-    def _browse_file(self, var):
-        chosen = filedialog.askopenfilename(initialdir=str(Path(var.get()).parent) if var.get() else None)
+    def _browse_file(self, entry: QLineEdit):
+        start_dir = str(Path(entry.text()).parent) if entry.text() else ""
+        chosen, _filter = QFileDialog.getOpenFileName(self, "Select file", start_dir)
         if chosen:
-            var.set(chosen)
+            entry.setText(chosen)
 
-    def _rebuild_game_section(self):
-        for child in self.game_section.winfo_children():
-            child.destroy()
+    def _rebuild_game_section(self, game_id: str = ""):
+        game_id = game_id or self.game_combo.currentText()
+        while self.game_group_layout.rowCount():
+            self.game_group_layout.removeRow(0)
 
-        game_id = self.active_game_var.get()
         adapter_cls = self.adapters.get(game_id)
         if not adapter_cls:
-            ttk.Label(self.game_section, text="No games found in games/.").pack(anchor="w")
+            self.game_group_layout.addRow(QLabel("No games found in games/."))
             return
 
         existing_game_cfg = self.existing_cfg.get("games", {}).get(game_id, {})
         for key, label, kind in adapter_cls.config_fields:
-            row = ttk.Frame(self.game_section)
-            row.pack(fill="x", pady=2)
-            ttk.Label(row, text=f"{label} *", width=28, anchor="w").pack(side="left")
-            var = tk.StringVar(value=str(existing_game_cfg.get(key, "")))
-            self.entries[f"games.{game_id}.{key}"] = var
-            entry = ttk.Entry(row, textvariable=var)
-            entry.pack(side="left", fill="x", expand=True)
+            entry_key = f"games.{game_id}.{key}"
+            entry = QLineEdit(str(existing_game_cfg.get(key, "")))
+            self.entries[entry_key] = entry
+
+            if kind == "text":
+                self.game_group_layout.addRow(f"{label} *", entry)
+                continue
+
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addWidget(entry)
+            browse = QPushButton("Browse...")
             if kind == "folder":
-                ttk.Button(row, text="Browse...", command=lambda v=var: self._browse_folder(v)).pack(side="left", padx=(6, 0))
-            elif kind == "file":
-                ttk.Button(row, text="Browse...", command=lambda v=var: self._browse_file(v)).pack(side="left", padx=(6, 0))
+                browse.clicked.connect(lambda _checked=False, e=entry: self._browse_folder(e))
+            else:
+                browse.clicked.connect(lambda _checked=False, e=entry: self._browse_file(e))
+            row_layout.addWidget(browse)
+            self.game_group_layout.addRow(f"{label} *", row)
 
-    def _toggle_secret_visibility(self):
-        show = self._show_secrets.get()
-        for row in self.scroll_frame.winfo_children():
-            self._toggle_recursive(row, show)
+    def _toggle_secret_visibility(self, checked: bool):
+        mode = QLineEdit.Normal if checked else QLineEdit.Password
+        for entry in self._secret_entries:
+            entry.setEchoMode(mode)
 
-    def _toggle_recursive(self, widget, show):
-        for child in widget.winfo_children():
-            if isinstance(child, ttk.Entry) and getattr(child, "secret", False):
-                child.configure(show="" if show else "*")
-            self._toggle_recursive(child, show)
+    # -- save/cancel --
 
     def _on_cancel(self):
         self.saved = False
-        self.win.destroy()
+        self.reject()
 
     def _on_save(self):
-        game_id = self.active_game_var.get()
+        game_id = self.game_combo.currentText()
         adapter_cls = self.adapters.get(game_id)
         if not adapter_cls:
-            messagebox.showerror("Missing game", "No game selected, or no game modules were found.")
+            QMessageBox.critical(self, "Missing game", "No game selected, or no game modules were found.")
             return
 
         missing = []
-        for key, label, required, _ in (
-            _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS
-        ):
-            if required and not self.entries[key].get().strip():
+        for key, label, required, _secret in _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS:
+            if required and not self.entries[key].text().strip():
                 missing.append(label)
         for key, label, _kind in adapter_cls.config_fields:
-            if not self.entries[f"games.{game_id}.{key}"].get().strip():
+            if not self.entries[f"games.{game_id}.{key}"].text().strip():
                 missing.append(label)
 
         if missing:
-            messagebox.showerror(
-                "Missing required fields",
-                "Please fill in:\n- " + "\n- ".join(missing),
-            )
+            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(missing))
             return
 
         def _int_or_default(key, default):
-            raw = self.entries[key].get().strip()
+            raw = self.entries[key].text().strip()
             if not raw:
                 return default
             try:
@@ -231,45 +268,29 @@ class _SettingsForm:
         for key, _label, _required, _secret in (
             _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS + _MOONBERRY_FIELDS + _MISC_FIELDS
         ):
-            cfg[key] = self.entries[key].get().strip()
-        cfg["poll_interval_seconds"] = _int_or_default("poll_interval_seconds", 30)
-        cfg["max_saved_versions"] = _int_or_default("max_saved_versions", 5)
+            cfg[key] = self.entries[key].text().strip()
+        for key, _label, default in _ADVANCED_FIELDS:
+            cfg[key] = _int_or_default(key, default)
 
         games_cfg = dict(cfg.get("games", {}))
         game_section = dict(games_cfg.get(game_id, {}))
         for key, _label, _kind in adapter_cls.config_fields:
-            game_section[key] = self.entries[f"games.{game_id}.{key}"].get().strip()
+            game_section[key] = self.entries[f"games.{game_id}.{key}"].text().strip()
         games_cfg[game_id] = game_section
         cfg["games"] = games_cfg
 
-        self.result_cfg = cfg
+        self.config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         self.saved = True
-        self.win.destroy()
+        self.accept()
 
 
 def run_setup_wizard(config_path: Path, adapters: dict, parent=None) -> bool:
-    """Shows the settings form. Writes config_path and returns True if the
-    user saved; returns False (leaving config_path untouched) if they
-    closed the window instead."""
-    existing_cfg = {}
-    if config_path.exists():
-        try:
-            existing_cfg = json.loads(config_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            existing_cfg = {}
+    """Shows the settings form modally. Writes config_path and returns True
+    if the user saved; returns False (leaving config_path untouched) if
+    they closed the dialog instead."""
+    if QApplication.instance() is None:
+        QApplication(sys.argv)
 
-    owns_root = parent is None
-    win = tk.Tk() if owns_root else tk.Toplevel(parent)
-
-    form = _SettingsForm(win, adapters, existing_cfg)
-
-    if owns_root:
-        win.mainloop()
-    else:
-        win.transient(parent)
-        win.grab_set()
-        parent.wait_window(win)
-
-    if form.saved:
-        config_path.write_text(json.dumps(form.result_cfg, indent=2), encoding="utf-8")
-    return form.saved
+    dialog = SettingsDialog(config_path, adapters, parent=parent)
+    dialog.exec()
+    return dialog.saved
