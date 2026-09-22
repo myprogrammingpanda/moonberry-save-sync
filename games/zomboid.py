@@ -11,7 +11,7 @@ from pathlib import Path
 
 import psutil
 
-from core.game_base import GameAdapter
+from core.game_base import GameAdapter, sanitize_key_component
 
 log = logging.getLogger("moonberry-sync")
 
@@ -25,6 +25,13 @@ class ZomboidAdapter(GameAdapter):
         ("zomboid_server_name", "Server name", "text"),
         ("zomboid_launch_uri", "Launch URI (Steam)", "text"),
     ]
+
+    @property
+    def save_key_prefix(self) -> str:
+        # gamename_servername, e.g. "zomboid_servertest_" -- matches
+        # Valheim's gamename_worldname scheme (see games/valheim.py).
+        server_name = sanitize_key_component(self.cfg["zomboid_server_name"])
+        return f"zomboid_{server_name}_"
 
     # -- process control --
 

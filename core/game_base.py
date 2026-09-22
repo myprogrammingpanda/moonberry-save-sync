@@ -6,9 +6,22 @@ To add a new game: drop a games/<id>.py file with a GameAdapter subclass.
 games/_discovery.py finds it automatically -- no other file needs to change.
 """
 
+import re
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+
+def sanitize_key_component(value: str) -> str:
+    """Makes a user-typed name (world name, server name) safe to use as
+    part of an S3 object key prefix -- collapses anything that isn't
+    alphanumeric/underscore/hyphen into a single underscore and strips
+    leading/trailing underscores, so save_key_prefix implementations can
+    build a prefix from config values without worrying about spaces or
+    other characters that are awkward (if not strictly invalid) in a
+    bucket key."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", value.strip())
+    return cleaned.strip("_") or "save"
 
 
 class GameAdapter(ABC):

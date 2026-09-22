@@ -61,7 +61,17 @@ class StatusPoller:
                     )
                     self.coordinator.release_host()
                     last_notified = None
-                    continue  # loop back around immediately to re-check status fresh
+                    # A short pause, not an immediate re-check: the
+                    # coordinator's backing store (Cloudflare KV) is only
+                    # eventually consistent, confirmed in practice -- a read
+                    # right after this release can still come back showing
+                    # the old "hosting: true" state, which would otherwise
+                    # trigger this exact branch again instantly, repeatedly,
+                    # until the write actually propagates (observed as a
+                    # burst of several duplicate "auto-releasing" log lines
+                    # within under a second).
+                    time.sleep(3)
+                    continue
 
                 if status.get("hosting"):
                     host_name = status.get("host_name")

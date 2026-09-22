@@ -14,7 +14,7 @@ from pathlib import Path
 
 import psutil
 
-from core.game_base import GameAdapter
+from core.game_base import GameAdapter, sanitize_key_component
 
 log = logging.getLogger("moonberry-sync")
 
@@ -39,10 +39,13 @@ class ValheimAdapter(GameAdapter):
 
     @property
     def save_key_prefix(self) -> str:
-        # Keep the pre-existing "world_save_" prefix (rather than the
-        # default "valheim_save_") so saves already uploaded to R2 under
-        # the old app aren't orphaned by this rewrite.
-        return "world_save_"
+        # gamename_worldname, e.g. "valheim_MyWorld_" -- existing saves
+        # under the old "world_save_" prefix were migrated forward to this
+        # scheme via scripts/migrate_save_key_prefix.py rather than left
+        # orphaned; see that script if this ever needs to happen again
+        # (e.g. after renaming the world).
+        world_name = sanitize_key_component(self.cfg["valheim_world_name"])
+        return f"valheim_{world_name}_"
 
     # -- process control --
 
