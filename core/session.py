@@ -287,6 +287,25 @@ class SessionController:
 
             self.adapter.wait_for_exit()
             log.info("%s has closed.", self.adapter.display_name)
+
+            if not self.adapter.has_local_save():
+                # Nothing was actually created/found at the configured save
+                # location -- uploading now would zip empty/nonexistent
+                # data and silently make THAT the group's new "official"
+                # save. Most likely cause: this game's world/server name
+                # (in Settings) doesn't match what was actually played --
+                # e.g. joining an existing shared save under the wrong
+                # name, so a real download landed under a different folder
+                # than the one configured here. Refuse instead of
+                # uploading garbage; the claim is released below with no
+                # upload, same as a cancelled session.
+                msg = (
+                    f"No local save found at the configured location for {self.adapter.display_name} -- "
+                    "not uploading. Check that the world/server name in Settings matches what you just played."
+                )
+                log.warning(msg)
+                return False, msg
+
             if update_status_text:
                 update_status_text(f"{self.adapter.display_name} closed — uploading your save...")
 
@@ -404,6 +423,16 @@ class SessionController:
         check doesn't block acquiring _sync_lock unnecessarily."""
         if self.adapter.is_running():
             return False, f"{self.adapter.display_name} is currently running — close it first."
+        if not self.adapter.has_local_save():
+            # Refuse before ever claiming -- zipping/uploading an empty or
+            # nonexistent save would make that the group's new "official"
+            # version. See the matching guard in _host_now_locked for the
+            # full reasoning (most likely cause: a world/server name in
+            # Settings that doesn't match what's actually on disk).
+            return False, (
+                f"No local save found at the configured location for {self.adapter.display_name} -- "
+                "not uploading. Check that the world/server name in Settings matches your actual save."
+            )
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
