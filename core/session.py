@@ -75,6 +75,28 @@ class SessionController:
         # avoid), so it has no effect after that point.
         self._stop_requested = threading.Event()
 
+    def _resolve_cloud_save_key(self, status: dict) -> str | None:
+        """The coordinator's claim/status is one global lock shared across
+        every game, but each game's actual save data is independent --
+        status["save_keys"] is a {game_id: key} map so each adapter can
+        find its OWN latest key instead of whichever game most recently
+        released. A status blob written before this map existed only has a
+        single flat "save_key" (whichever game released last, full stop) --
+        only adopt that one if it actually matches OUR OWN storage prefix,
+        confirming it's really this game's data and not some other game's
+        key handed to the wrong adapter (exactly the bug this replaced:
+        Force Download/Host Now on Zomboid pulling down Valheim's key and
+        unzipping Valheim's save data into Zomboid's save folder)."""
+        save_keys = status.get("save_keys") or {}
+        key = save_keys.get(self.adapter.game_id)
+        if key:
+            return key
+
+        legacy_flat_key = status.get("save_key")
+        if legacy_flat_key and legacy_flat_key.startswith(self.adapter.save_key_prefix):
+            return legacy_flat_key
+        return None
+
     def sync_down_if_needed(self, cloud_save_key: str | None) -> bool:
         """Downloads and applies the cloud save if the local copy doesn't
         already match it. Returns True if the local save now matches the
@@ -208,7 +230,7 @@ class SessionController:
         try:
             if update_status_text:
                 update_status_text("Syncing your save...")
-            self.sync_down_if_needed(current.get("save_key"))
+            self.sync_down_if_needed(self._resolve_cloud_save_key(current))
 
             if on_ready_for_launch:
                 on_ready_for_launch()
@@ -345,7 +367,7 @@ class SessionController:
         except requests.RequestException:
             return False, ""
 
-        cloud_key = status.get("save_key")
+        cloud_key = self._resolve_cloud_save_key(status)
         if not cloud_key:
             return False, ""  # coordinator has no versioned save yet -- nothing to compare against
 
@@ -443,7 +465,7 @@ class SessionController:
 
         log.info("Manual download requested.")
         try:
-            ok = self.sync_down_if_needed(status.get("save_key"))
+            ok = self.sync_down_if_needed(self._resolve_cloud_save_key(status))
         except Exception:
             log.exception("Manual download failed.")
             return False, "Download failed — see log for details."
