@@ -27,6 +27,10 @@ without changing how it works today.
    (not something you make up yourself). Fill them in and hit Save.
    That's it — you won't need to do this again.
 
+   **Setting this up for a new friend group?** See [`SETUP.md`](SETUP.md)
+   for deploying your own coordinator and storage — only one person per
+   group needs to do this, once.
+
 ## Using it
 
 - **Status**: the app shows who's currently hosting (if anyone), live.
