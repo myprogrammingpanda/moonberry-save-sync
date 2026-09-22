@@ -11,7 +11,7 @@ from pathlib import Path
 
 import psutil
 
-from core.game_base import GameAdapter, sanitize_key_component
+from core.game_base import GameAdapter
 
 log = logging.getLogger("moonberry-sync")
 
@@ -27,11 +27,12 @@ class ZomboidAdapter(GameAdapter):
     ]
 
     @property
-    def save_key_prefix(self) -> str:
-        # gamename_servername, e.g. "zomboid_servertest_" -- matches
-        # Valheim's gamename_worldname scheme (see games/valheim.py).
-        server_name = sanitize_key_component(self.cfg["zomboid_server_name"])
-        return f"zomboid_{server_name}_"
+    def default_save_name(self) -> str:
+        return self.cfg["zomboid_server_name"]
+
+    # save_key_prefix (gamename_servername, e.g. "zomboid_servertest_",
+    # matching Valheim's gamename_worldname scheme) is inherited from
+    # GameAdapter.save_key_prefix, built from default_save_name above.
 
     # -- process control --
 
@@ -47,7 +48,7 @@ class ZomboidAdapter(GameAdapter):
 
     # -- save format --
 
-    def _save_dir(self) -> Path:
+    def _save_dir(self, save_name: str | None = None) -> Path:
         """
         The authoritative world save (players.db, vehicles.db, map/chunk
         data). Hosting locally also creates a sibling "<name>_player"
@@ -55,13 +56,31 @@ class ZomboidAdapter(GameAdapter):
         deliberately NOT synced here: it holds no player or world data of
         its own and is expected to regenerate on its own if missing.
         """
-        return Path(self.cfg["zomboid_saves_folder"]) / self.cfg["zomboid_server_name"]
+        return Path(self.cfg["zomboid_saves_folder"]) / (save_name or self.default_save_name)
 
-    def has_local_save(self) -> bool:
-        return self._save_dir().is_dir()
+    def has_local_save(self, save_name: str | None = None) -> bool:
+        return self._save_dir(save_name).is_dir()
 
-    def content_hash(self) -> str | None:
-        target = self._save_dir()
+    def list_local_saves(self) -> list[str]:
+        """Every server-name folder under zomboid_saves_folder, excluding
+        the "<name>_player" sibling folders hosting locally creates --
+        those are a disposable client-side chunk cache, not a real save,
+        and must never be listed as if they were a selectable one."""
+        root = Path(self.cfg["zomboid_saves_folder"])
+        if not root.is_dir():
+            return []
+        return sorted(d.name for d in root.iterdir() if d.is_dir() and not d.name.endswith("_player"))
+
+    def save_stat(self, save_name: str) -> tuple[datetime | None, int | None]:
+        target = self._save_dir(save_name)
+        files = [f for f in target.rglob("*") if f.is_file()] if target.is_dir() else []
+        if not files:
+            return None, None
+        stats = [f.stat() for f in files]
+        return datetime.fromtimestamp(max(s.st_mtime for s in stats)), sum(s.st_size for s in stats)
+
+    def content_hash(self, save_name: str | None = None) -> str | None:
+        target = self._save_dir(save_name)
         if not target.is_dir():
             return None
         files = sorted(f for f in target.rglob("*") if f.is_file())
@@ -73,19 +92,19 @@ class ZomboidAdapter(GameAdapter):
             hasher.update(f.read_bytes())
         return hasher.hexdigest()
 
-    def backup_local_save(self, backup_dir: Path) -> None:
-        target = self._save_dir()
+    def backup_local_save(self, backup_dir: Path, save_name: str | None = None) -> None:
+        target = self._save_dir(save_name)
         if target.exists():
             backup_dir.mkdir(exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             shutil.copytree(target, backup_dir / f"{target.name}_{stamp}")
         log.info("Backed up local save (if present) to %s", backup_dir)
 
-    def zip_save(self, dest_zip: Path) -> None:
+    def zip_save(self, dest_zip: Path, save_name: str | None = None) -> None:
         """Preserves the server-name folder as a path prefix inside the
         zip (e.g. "servertest/players.db") so extracting it back into the
         Multiplayer saves folder recreates the subfolder, not loose files."""
-        target = self._save_dir()
+        target = self._save_dir(save_name)
         with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in target.rglob("*"):
                 if f.is_file():

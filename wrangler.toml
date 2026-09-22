@@ -1,0 +1,7 @@
+name = "valheim-sync-coordinator"
+main = "worker.js"
+compatibility_date = "2026-09-04"
+
+[[kv_namespaces]]
+binding = "HOST_KV"
+id = "3e725a4e4a6e48e8be239b5c8e473693"

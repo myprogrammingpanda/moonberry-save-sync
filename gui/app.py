@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
             text = self._resolve_status_text(game_id, status)
             self.game_list.item(i).setText(f"{self.game_controllers[game_id].adapter.display_name}  ·  {text}")
             self.panels[game_id].set_status_text(text)
+            self.panels[game_id].set_status(status)
 
     def _resolve_status_text(self, game_id: str, status: dict) -> str:
         controller = self.game_controllers[game_id]

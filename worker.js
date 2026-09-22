@@ -25,10 +25,20 @@ async function getStatus(env) {
       // client must always look up ITS OWN game_id in these maps, never
       // trust the singular fields for actual sync decisions -- those can
       // (and did) belong to a completely different game.
+      save_slot: null,
+      save_display_name: null,
       save_version: 0,
       save_key: null,
+      // save_versions/save_keys are per-game maps, further nested by
+      // save-slot as of the multi-save-support change: { game_id: { slot_id:
+      // value } }. A game_id entry written by a pre-multi-save client is a
+      // bare string/number instead of an object -- guarded against in
+      // /release below rather than migrated here, since getStatus() itself
+      // has no per-game_id knowledge to safely reshape it.
       save_versions: {},
-      save_keys: {}
+      save_keys: {},
+      save_owners: {},
+      save_display_names: {}
     };
   }
   return JSON.parse(raw);
@@ -53,6 +63,8 @@ var worker_default = {
       const body = await request.json().catch(() => ({}));
       const name = (body.name || "unknown").toString().slice(0, 64);
       const gameId = (body.game_id || "unknown").toString().slice(0, 64);
+      const saveSlot = (body.save_slot || "default").toString().slice(0, 128);
+      const saveDisplayName = (body.save_display_name || saveSlot).toString().slice(0, 128);
       const current = await getStatus(env);
       if (current.hosting) {
         return json({ ok: false, reason: "already_hosting", current }, 409);
@@ -61,11 +73,15 @@ var worker_default = {
         hosting: true,
         host_name: name,
         game_id: gameId,
+        save_slot: saveSlot,
+        save_display_name: saveDisplayName,
         since: Date.now(),
         save_version: current.save_version || 0,
         save_key: current.save_key || null,
         save_versions: current.save_versions || {},
         save_keys: current.save_keys || {},
+        save_owners: current.save_owners || {},
+        save_display_names: current.save_display_names || {},
         join_code: null
       };
       await setStatus(env, next);
@@ -76,15 +92,34 @@ var worker_default = {
       const name = (body.name || "unknown").toString().slice(0, 64);
       const saveKey = body.save_key ? body.save_key.toString().slice(0, 256) : null;
       const current = await getStatus(env);
-      // The game this claim was actually FOR -- taken from the live claim,
-      // never from the release request body, so a client can't (accidentally
-      // or otherwise) write into another game's slot.
+      // The game and slot this claim was actually FOR -- taken from the
+      // live claim, never from the release request body, so a client
+      // can't (accidentally or otherwise) write into another claim's slot.
       const gameId = current.game_id || "unknown";
+      const saveSlot = current.save_slot || "default";
+      const saveDisplayName = current.save_display_name || saveSlot;
+
       const saveKeys = { ...(current.save_keys || {}) };
       const saveVersions = { ...(current.save_versions || {}) };
+      const saveOwners = { ...(current.save_owners || {}) };
+      const saveDisplayNames = { ...(current.save_display_names || {}) };
+      // A game_id entry from a pre-multi-save client (or an idle blob from
+      // before this change deployed) is a bare string/number, not an
+      // object keyed by slot -- discard it instead of nesting into it, so
+      // it can't corrupt the new shape. It's never lost data: the
+      // singular save_key/save_version fields below still carry the same
+      // information forward for old clients.
+      if (saveKeys[gameId] && typeof saveKeys[gameId] !== "object") saveKeys[gameId] = {};
+      if (saveVersions[gameId] && typeof saveVersions[gameId] !== "object") saveVersions[gameId] = {};
+      if (saveOwners[gameId] && typeof saveOwners[gameId] !== "object") saveOwners[gameId] = {};
+      if (saveDisplayNames[gameId] && typeof saveDisplayNames[gameId] !== "object") saveDisplayNames[gameId] = {};
+
       if (saveKey) {
-        saveKeys[gameId] = saveKey;
-        saveVersions[gameId] = (saveVersions[gameId] || 0) + 1;
+        saveKeys[gameId] = { ...(saveKeys[gameId] || {}), [saveSlot]: saveKey };
+        const prevVersion = (saveVersions[gameId] || {})[saveSlot] || 0;
+        saveVersions[gameId] = { ...(saveVersions[gameId] || {}), [saveSlot]: prevVersion + 1 };
+        saveOwners[gameId] = { ...(saveOwners[gameId] || {}), [saveSlot]: name };
+        saveDisplayNames[gameId] = { ...(saveDisplayNames[gameId] || {}), [saveSlot]: saveDisplayName };
       }
       const next = {
         hosting: false,
@@ -93,16 +128,21 @@ var worker_default = {
         // the dashboard show "last hosted: Zomboid" while idle instead of
         // losing that as soon as the session ends.
         game_id: current.game_id || null,
+        save_slot: current.save_slot || null,
+        save_display_name: current.save_display_name || null,
         since: null,
         // Singular save_version/save_key kept updating exactly as before,
         // for old clients that don't know about the per-game maps yet --
         // they only ever cared about "whichever game released most
-        // recently" anyway. save_keys/save_versions (plural) are the real
-        // per-game data new clients must use instead.
+        // recently" anyway. save_keys/save_versions (plural, now further
+        // nested by save_slot) are the real per-slot data new clients
+        // must use instead.
         save_version: (current.save_version || 0) + 1,
         save_key: saveKey || current.save_key || null,
         save_versions: saveVersions,
         save_keys: saveKeys,
+        save_owners: saveOwners,
+        save_display_names: saveDisplayNames,
         last_host: name,
         released_at: Date.now()
       };

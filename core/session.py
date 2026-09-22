@@ -22,6 +22,9 @@ from pathlib import Path
 
 import requests
 
+from core.save_status import resolve_slot_cloud_key
+from core.storage import LocalContentHash, LocalSaveRecord, SaveStorage
+
 log = logging.getLogger("moonberry-sync")
 
 
@@ -36,6 +39,7 @@ class SessionController:
         local_content_hash,
         notifier,
         player_name: str,
+        cfg: dict,
         max_saved_versions: int = 5,
     ):
         self.app_dir = app_dir
@@ -46,7 +50,20 @@ class SessionController:
         self.local_content_hash = local_content_hash
         self.notifier = notifier
         self.player_name = player_name
+        self.cfg = cfg
         self.max_saved_versions = max_saved_versions
+
+        # Per-save-slot (storage, local_record, local_content_hash, save_name)
+        # tuples, built lazily and cached as multi-save actions touch new
+        # slots. Seeded with the DEFAULT slot's exact instances passed in
+        # above (the same ones registry.py always built) rather than
+        # reconstructing filename-equivalent ones, so the configured
+        # default save's behavior stays byte-identical to before
+        # multi-save support existed.
+        self._default_slot_id = adapter.slot_id_for(adapter.default_save_name)
+        self._slot_resources: dict[str, tuple] = {
+            self._default_slot_id: (storage, local_record, local_content_hash, adapter.default_save_name)
+        }
 
         # Guards every zip/upload/download flow (a real hosting session or
         # either manual sync action) since they all touch the same temp
@@ -75,44 +92,66 @@ class SessionController:
         # avoid), so it has no effect after that point.
         self._stop_requested = threading.Event()
 
-    def _resolve_cloud_save_key(self, status: dict) -> str | None:
+    def _resources_for(self, save_name: str | None) -> tuple:
+        """Resolves (and lazily builds/caches) the (storage, local_record,
+        local_content_hash, save_name) tuple for the given save, or the
+        configured default save if save_name is None -- every action
+        method below goes through this instead of touching self.storage /
+        self.local_record / self.local_content_hash directly, so acting on
+        a non-default slot never disturbs the default slot's own tracking
+        files or vice versa."""
+        name = save_name or self.adapter.default_save_name
+        slot_id = self.adapter.slot_id_for(name)
+        if slot_id not in self._slot_resources:
+            prefix = self.adapter.save_key_prefix_for(name)
+            storage = SaveStorage(self.cfg, key_prefix=prefix)
+            # slot_id=None for the default slot reproduces the exact
+            # pre-multi-save filenames (see core/storage.py) -- but the
+            # default slot is always already seeded in __init__, so this
+            # branch only ever runs for a genuinely non-default slot.
+            local_record = LocalSaveRecord(self.app_dir, self.adapter.game_id, prefix, slot_id=slot_id)
+            local_content_hash = LocalContentHash(self.app_dir, self.adapter.game_id, slot_id=slot_id)
+            self._slot_resources[slot_id] = (storage, local_record, local_content_hash, name)
+        return self._slot_resources[slot_id]
+
+    def _resolve_cloud_save_key(self, status: dict, save_name: str | None = None) -> str | None:
         """The coordinator's claim/status is one global lock shared across
-        every game, but each game's actual save data is independent --
-        status["save_keys"] is a {game_id: key} map so each adapter can
-        find its OWN latest key instead of whichever game most recently
-        released. A status blob written before this map existed only has a
-        single flat "save_key" (whichever game released last, full stop) --
-        only adopt that one if it actually matches OUR OWN storage prefix,
-        confirming it's really this game's data and not some other game's
-        key handed to the wrong adapter (exactly the bug this replaced:
-        Force Download/Host Now on Zomboid pulling down Valheim's key and
-        unzipping Valheim's save data into Zomboid's save folder)."""
-        save_keys = status.get("save_keys") or {}
-        key = save_keys.get(self.adapter.game_id)
-        if key:
-            return key
+        every game (now further keyed by save-slot too), but each save's
+        actual data is independent -- status["save_keys"] is a
+        {game_id: {slot_id: key}} map so each save can find its OWN
+        latest key instead of whichever save most recently released. See
+        core.save_status.resolve_slot_cloud_key for the full shape
+        handling (new nested map, pre-multi-save flat per-game string, or
+        the oldest single global flat save_key) -- adopting either flat
+        form only if it actually matches OUR OWN storage prefix, confirming
+        it's really this save's data and not some other save's (or some
+        other game's) key handed to the wrong adapter (exactly the bug
+        this replaced: Force Download/Host Now on Zomboid pulling down
+        Valheim's key and unzipping Valheim's save data into Zomboid's
+        save folder)."""
+        name = save_name or self.adapter.default_save_name
+        slot_id = self.adapter.slot_id_for(name)
+        own_prefix = self.adapter.save_key_prefix_for(name)
+        return resolve_slot_cloud_key(status, self.adapter.game_id, slot_id, own_prefix)
 
-        legacy_flat_key = status.get("save_key")
-        if legacy_flat_key and legacy_flat_key.startswith(self.adapter.save_key_prefix):
-            return legacy_flat_key
-        return None
-
-    def sync_down_if_needed(self, cloud_save_key: str | None) -> bool:
+    def sync_down_if_needed(self, cloud_save_key: str | None, save_name: str | None = None) -> bool:
         """Downloads and applies the cloud save if the local copy doesn't
         already match it. Returns True if the local save now matches the
         cloud version (whether that took a fresh download or it already
         matched), or False if a download was needed but failed."""
-        local_save_key = self.local_record.read()
+        storage, local_record, _, name = self._resources_for(save_name)
+        slot_id = self.adapter.slot_id_for(name)
+        local_save_key = local_record.read()
 
         # Fallback for the transition period right after upgrading to the
         # versioned-save scheme: if the coordinator doesn't have a save_key
         # yet, fall back to the old static filename so existing saves
-        # aren't stranded. self.storage.legacy_key is None unless a config
+        # aren't stranded. storage.legacy_key is None unless a config
         # explicitly sets one (see core/storage.py) -- most games (anything
         # that isn't Valheim's original pre-multi-game save) will never
         # have one, which is correct: they never had unversioned legacy
         # data to migrate from in the first place.
-        effective_cloud_key = cloud_save_key or self.storage.legacy_key
+        effective_cloud_key = cloud_save_key or storage.legacy_key
 
         if not cloud_save_key and effective_cloud_key:
             log.info(
@@ -131,13 +170,13 @@ class SessionController:
                 effective_cloud_key,
                 local_save_key,
             )
-            self.adapter.backup_local_save(self.app_dir / "local_backups")
-            tmp_zip = self.app_dir / f"_incoming_save_{self.adapter.game_id}.zip"
-            if self.storage.download_save(tmp_zip, effective_cloud_key):
+            self.adapter.backup_local_save(self.app_dir / "local_backups", save_name=name)
+            tmp_zip = self.app_dir / f"_incoming_save_{self.adapter.game_id}_{slot_id}.zip"
+            if storage.download_save(tmp_zip, effective_cloud_key):
                 self.adapter.unzip_save(tmp_zip)
                 tmp_zip.unlink(missing_ok=True)
-                self.local_record.write(effective_cloud_key)
-                self._refresh_content_hash()
+                local_record.write(effective_cloud_key)
+                self._refresh_content_hash(save_name=name)
                 log.info("Local save updated to '%s'.", effective_cloud_key)
                 return True
             return False
@@ -145,15 +184,16 @@ class SessionController:
             log.info("Local save is already up to date ('%s').", local_save_key)
             return True
 
-    def _refresh_content_hash(self) -> None:
+    def _refresh_content_hash(self, save_name: str | None = None) -> None:
         """Records the current on-disk save's content hash as "last known
         synced" -- called right after a successful upload or download, so
         the next Force Upload can tell whether anything's actually
         changed since. A no-op if the adapter doesn't implement hashing
         (content_hash() returning None)."""
-        content_hash = self.adapter.content_hash()
+        _, _, local_content_hash, name = self._resources_for(save_name)
+        content_hash = self.adapter.content_hash(save_name=name)
         if content_hash:
-            self.local_content_hash.write(content_hash)
+            local_content_hash.write(content_hash)
 
     # How long Host Now waits for you to actually start the game yourself
     # after claiming and syncing -- much longer than the old "did the
@@ -184,9 +224,12 @@ class SessionController:
             time.sleep(2)
         return "timeout"
 
-    def host_now(self, update_status_text=None, on_ready_for_launch=None, on_game_started=None) -> tuple[bool, str]:
-        """Claims the host slot, syncs your local save, then waits for you
-        to start the game yourself -- deliberately does NOT launch it (see
+    def host_now(
+        self, save_name: str | None = None, update_status_text=None, on_ready_for_launch=None, on_game_started=None
+    ) -> tuple[bool, str]:
+        """Claims the host slot (for save_name, or the configured default
+        save if not given), syncs your local save, then waits for you to
+        start the game yourself -- deliberately does NOT launch it (see
         Play Now for that). Refuses outright if the game's already
         running: syncing a save the game already has loaded is unsafe --
         the write either fails outright, or succeeds and then gets
@@ -211,13 +254,17 @@ class SessionController:
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
-            return self._host_now_locked(update_status_text, on_ready_for_launch, on_game_started)
+            return self._host_now_locked(save_name, update_status_text, on_ready_for_launch, on_game_started)
         finally:
             self._sync_lock.release()
 
-    def _host_now_locked(self, update_status_text=None, on_ready_for_launch=None, on_game_started=None) -> tuple[bool, str]:
+    def _host_now_locked(
+        self, save_name: str | None = None, update_status_text=None, on_ready_for_launch=None, on_game_started=None
+    ) -> tuple[bool, str]:
+        storage, local_record, _, name = self._resources_for(save_name)
+        slot_id = self.adapter.slot_id_for(name)
         log.info("Host Now requested. Attempting to claim host...")
-        result = self.coordinator.claim_host(self.adapter.game_id)
+        result = self.coordinator.claim_host(self.adapter.game_id, slot_id, name)
         if not result.get("ok"):
             host_name = result.get("current", {}).get("host_name") or "someone"
             msg = f"Someone is currently hosting ({host_name}) — try again later."
@@ -238,7 +285,7 @@ class SessionController:
         try:
             if update_status_text:
                 update_status_text("Syncing your save...")
-            self.sync_down_if_needed(self._resolve_cloud_save_key(current))
+            self.sync_down_if_needed(self._resolve_cloud_save_key(current, save_name=name), save_name=name)
 
             if on_ready_for_launch:
                 on_ready_for_launch()
@@ -288,7 +335,7 @@ class SessionController:
             self.adapter.wait_for_exit()
             log.info("%s has closed.", self.adapter.display_name)
 
-            if not self.adapter.has_local_save():
+            if not self.adapter.has_local_save(save_name=name):
                 # Nothing was actually created/found at the configured save
                 # location -- uploading now would zip empty/nonexistent
                 # data and silently make THAT the group's new "official"
@@ -309,19 +356,19 @@ class SessionController:
             if update_status_text:
                 update_status_text(f"{self.adapter.display_name} closed — uploading your save...")
 
-            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}.zip"
+            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}_{slot_id}.zip"
 
             zip_start = time.time()
             log.info("Zipping save...")
-            self.adapter.zip_save(out_zip)
+            self.adapter.zip_save(out_zip, save_name=name)
             zip_seconds = time.time() - zip_start
             zip_size_mb = out_zip.stat().st_size / (1024 * 1024)
             log.info("Zip complete: %.1f MB in %.1fs.", zip_size_mb, zip_seconds)
 
-            uploaded_key = self.storage.new_save_key()
+            uploaded_key = storage.new_save_key()
             upload_start = time.time()
             log.info("Uploading save as '%s'...", uploaded_key)
-            self.storage.upload_save(out_zip, uploaded_key)
+            storage.upload_save(out_zip, uploaded_key)
             upload_seconds = time.time() - upload_start
             log.info("Upload complete in %.1fs.", upload_seconds)
             out_zip.unlink(missing_ok=True)
@@ -337,13 +384,13 @@ class SessionController:
             self._host_now_pending = False
             if uploaded_successfully:
                 self.coordinator.release_host(save_key=uploaded_key)
-                self.local_record.write(uploaded_key)
-                self._refresh_content_hash()
+                local_record.write(uploaded_key)
+                self._refresh_content_hash(save_name=name)
                 log.info(
                     "Save uploaded ('%s') and host slot released. Thanks for playing!",
                     uploaded_key,
                 )
-                self.storage.prune_old_saves(keep=self.max_saved_versions)
+                storage.prune_old_saves(keep=self.max_saved_versions)
                 self.notifier.notify(self.adapter.game_id, self.player_name, event="ended")
             else:
                 self.coordinator.release_host()
@@ -353,7 +400,7 @@ class SessionController:
             return True, f"Session ended — save uploaded as '{uploaded_key}'."
         return False, "Session ended without a successful upload — see log for details."
 
-    def check_upload_redundancy(self) -> tuple[bool, str]:
+    def check_upload_redundancy(self, save_name: str | None = None) -> tuple[bool, str]:
         """Compares the current on-disk save's content against the hash
         recorded the last time this machine's save was known to match the
         cloud (just uploaded or just downloaded). A save_key match alone
@@ -366,17 +413,18 @@ class SessionController:
         (is_unchanged, message); message is empty when not redundant (or
         when there's no baseline hash yet to compare against, e.g. before
         this machine's first upload/download since this feature shipped)."""
-        current_hash = self.adapter.content_hash()
+        _, _, local_content_hash, name = self._resources_for(save_name)
+        current_hash = self.adapter.content_hash(save_name=name)
         if not current_hash:
             return False, ""  # adapter doesn't support hashing, or nothing on disk yet
 
-        last_known_hash = self.local_content_hash.read()
+        last_known_hash = local_content_hash.read()
         if not last_known_hash or current_hash != last_known_hash:
             return False, ""
 
         return True, "Your save hasn't changed since your last upload or download — nothing new to upload."
 
-    def check_upload_freshness(self) -> tuple[bool, str]:
+    def check_upload_freshness(self, save_name: str | None = None) -> tuple[bool, str]:
         """Compares the local save record against what the coordinator
         currently reports as the latest version. Force Upload has no
         other version awareness at all -- it just zips and uploads
@@ -389,16 +437,17 @@ class SessionController:
         upload proceeds) if the coordinator can't be reached right now --
         the actual claim attempt right after this will surface that on
         its own."""
+        _, local_record, _, name = self._resources_for(save_name)
         try:
             status = self.coordinator.get_status()
         except requests.RequestException:
             return False, ""
 
-        cloud_key = self._resolve_cloud_save_key(status)
+        cloud_key = self._resolve_cloud_save_key(status, save_name=name)
         if not cloud_key:
             return False, ""  # coordinator has no versioned save yet -- nothing to compare against
 
-        if cloud_key == self.local_record.read():
+        if cloud_key == local_record.read():
             return False, ""
 
         return True, (
@@ -408,22 +457,23 @@ class SessionController:
             "Continue anyway?"
         )
 
-    def force_upload_current_save(self) -> tuple[bool, str]:
-        """Uploads whatever's currently in the save folder as a new
-        version, independent of whether this app was used to host a
-        session -- e.g. after playing solo, outside the app's normal
-        flow. Still goes through the same claim/release ceremony as a
-        real session, so it can't step on an actual in-progress host
-        (this fails for ANY current claim-holder, not just other
-        players -- the coordinator's /claim is a strict atomic check,
-        not an identity check). Launching the game is skipped entirely;
-        this is upload-only. Doesn't check version freshness itself --
-        see check_upload_freshness, called separately by the GUI before
-        this, so the (possibly slow) coordinator round-trip for that
-        check doesn't block acquiring _sync_lock unnecessarily."""
+    def force_upload_current_save(self, save_name: str | None = None) -> tuple[bool, str]:
+        """Uploads whatever's currently in the save folder (for save_name,
+        or the configured default save if not given) as a new version,
+        independent of whether this app was used to host a session -- e.g.
+        after playing solo, outside the app's normal flow. Still goes
+        through the same claim/release ceremony as a real session, so it
+        can't step on an actual in-progress host (this fails for ANY
+        current claim-holder, not just other players -- the coordinator's
+        /claim is a strict atomic check, not an identity check). Launching
+        the game is skipped entirely; this is upload-only. Doesn't check
+        version freshness itself -- see check_upload_freshness, called
+        separately by the GUI before this, so the (possibly slow)
+        coordinator round-trip for that check doesn't block acquiring
+        _sync_lock unnecessarily."""
         if self.adapter.is_running():
             return False, f"{self.adapter.display_name} is currently running — close it first."
-        if not self.adapter.has_local_save():
+        if not self.adapter.has_local_save(save_name=save_name):
             # Refuse before ever claiming -- zipping/uploading an empty or
             # nonexistent save would make that the group's new "official"
             # version. See the matching guard in _host_now_locked for the
@@ -436,13 +486,15 @@ class SessionController:
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
-            return self._force_upload_current_save_locked()
+            return self._force_upload_current_save_locked(save_name)
         finally:
             self._sync_lock.release()
 
-    def _force_upload_current_save_locked(self) -> tuple[bool, str]:
+    def _force_upload_current_save_locked(self, save_name: str | None = None) -> tuple[bool, str]:
+        storage, local_record, _, name = self._resources_for(save_name)
+        slot_id = self.adapter.slot_id_for(name)
         log.info("Manual upload requested. Attempting to claim host...")
-        result = self.coordinator.claim_host(self.adapter.game_id)
+        result = self.coordinator.claim_host(self.adapter.game_id, slot_id, name)
         if not result.get("ok"):
             host_name = result.get("current", {}).get("host_name") or "someone"
             msg = f"Someone is currently hosting ({host_name}) — try again later."
@@ -452,12 +504,12 @@ class SessionController:
         uploaded_successfully = False
         uploaded_key = None
         try:
-            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}.zip"
+            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}_{slot_id}.zip"
             log.info("Zipping current save for manual upload...")
-            self.adapter.zip_save(out_zip)
-            uploaded_key = self.storage.new_save_key()
+            self.adapter.zip_save(out_zip, save_name=name)
+            uploaded_key = storage.new_save_key()
             log.info("Uploading save as '%s'...", uploaded_key)
-            self.storage.upload_save(out_zip, uploaded_key)
+            storage.upload_save(out_zip, uploaded_key)
             out_zip.unlink(missing_ok=True)
             uploaded_successfully = True
         except Exception:
@@ -465,9 +517,9 @@ class SessionController:
         finally:
             if uploaded_successfully:
                 self.coordinator.release_host(save_key=uploaded_key)
-                self.local_record.write(uploaded_key)
-                self._refresh_content_hash()
-                self.storage.prune_old_saves(keep=self.max_saved_versions)
+                local_record.write(uploaded_key)
+                self._refresh_content_hash(save_name=name)
+                storage.prune_old_saves(keep=self.max_saved_versions)
             else:
                 self.coordinator.release_host()
 
@@ -477,9 +529,10 @@ class SessionController:
             return True, msg
         return False, "Upload failed — see log for details."
 
-    def force_download_latest(self) -> tuple[bool, str]:
+    def force_download_latest(self, save_name: str | None = None) -> tuple[bool, str]:
         """Downloads and applies whatever the coordinator currently has
-        as the latest save, reusing sync_down_if_needed's own
+        as the latest version of the given save (or the configured
+        default save if not given), reusing sync_down_if_needed's own
         backup-before-overwrite logic -- the same protection a normal
         sync gets. No claim is taken: this only reads the coordinator's
         status and the storage bucket, neither of which is exclusive."""
@@ -488,11 +541,11 @@ class SessionController:
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
-            return self._force_download_latest_locked()
+            return self._force_download_latest_locked(save_name)
         finally:
             self._sync_lock.release()
 
-    def _force_download_latest_locked(self) -> tuple[bool, str]:
+    def _force_download_latest_locked(self, save_name: str | None = None) -> tuple[bool, str]:
         try:
             status = self.coordinator.get_status()
         except requests.RequestException as e:
@@ -502,7 +555,7 @@ class SessionController:
 
         log.info("Manual download requested.")
         try:
-            ok = self.sync_down_if_needed(self._resolve_cloud_save_key(status))
+            ok = self.sync_down_if_needed(self._resolve_cloud_save_key(status, save_name=save_name), save_name=save_name)
         except Exception:
             log.exception("Manual download failed.")
             return False, "Download failed — see log for details."

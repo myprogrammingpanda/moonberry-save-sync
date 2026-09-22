@@ -15,6 +15,10 @@ class GameSyncRow(QWidget):
     # message box naming which game it was about.
     sync_finished = Signal(str, str, bool, str)  # game_id, action, success, message
     upload_precheck_done = Signal(str, str)  # verdict ("ok"/"redundant"/"stale"), message
+    # Bubbles up to GameDetailPanel so it can disable Overview's other
+    # controls and every Saves-tab row while this row's own action is
+    # mid-flight -- see GameDetailPanel._set_busy.
+    busy_changed = Signal(bool)
 
     def __init__(self, game_id: str, display_name: str, controller, is_active: bool, parent=None):
         super().__init__(parent)
@@ -43,6 +47,10 @@ class GameSyncRow(QWidget):
         self.sync_finished.connect(self._on_finished)
         self.upload_precheck_done.connect(self._on_upload_precheck_done)
 
+    def set_enabled(self, enabled: bool) -> None:
+        self.upload_button.setEnabled(enabled)
+        self.download_button.setEnabled(enabled)
+
     def _on_upload(self):
         # Force Upload has no version awareness of its own -- it just
         # uploads whatever's on disk. Two checks run first, off the GUI
@@ -55,6 +63,7 @@ class GameSyncRow(QWidget):
         # everyone; otherwise it proceeds straight to uploading.
         self.upload_button.setEnabled(False)
         self.download_button.setEnabled(False)
+        self.busy_changed.emit(True)
         self.status_label.setText("Checking version...")
 
         def worker():
@@ -74,6 +83,7 @@ class GameSyncRow(QWidget):
         if verdict == "redundant":
             self.upload_button.setEnabled(True)
             self.download_button.setEnabled(True)
+            self.busy_changed.emit(False)
             self.status_label.setText("")
             QMessageBox.information(self.window(), "Force Upload Current Save", message)
             return
@@ -82,6 +92,7 @@ class GameSyncRow(QWidget):
             if answer != QMessageBox.Yes:
                 self.upload_button.setEnabled(True)
                 self.download_button.setEnabled(True)
+                self.busy_changed.emit(False)
                 self.status_label.setText("")
                 return
         self._run(self.controller.force_upload_current_save, "upload")
@@ -99,6 +110,7 @@ class GameSyncRow(QWidget):
     def _run(self, fn, action: str):
         self.upload_button.setEnabled(False)
         self.download_button.setEnabled(False)
+        self.busy_changed.emit(True)
         self.status_label.setText("Working...")
 
         def worker():
@@ -110,6 +122,7 @@ class GameSyncRow(QWidget):
     def _on_finished(self, _game_id: str, _action: str, success: bool, msg: str):
         self.upload_button.setEnabled(True)
         self.download_button.setEnabled(True)
+        self.busy_changed.emit(False)
         self.status_label.setText("Done" if success else "Failed")
         if success:
             QMessageBox.information(self.window(), "Success", msg)

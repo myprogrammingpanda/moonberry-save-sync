@@ -85,7 +85,8 @@ def migrate_game(game_id: str, adapter, cfg: dict, coordinator: Coordinator, app
 
     latest_new_key = renames[-1][1]
 
-    claim = coordinator.claim_host(game_id)
+    slot_id = adapter.slot_id_for(adapter.default_save_name)
+    claim = coordinator.claim_host(game_id, slot_id, adapter.default_save_name)
     if not claim.get("ok"):
         print(
             f"[{game_id}] WARNING: could not claim to update the coordinator's record "

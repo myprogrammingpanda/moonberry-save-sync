@@ -9,6 +9,7 @@ games/_discovery.py finds it automatically -- no other file needs to change.
 import re
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 
 
@@ -40,6 +41,16 @@ class GameAdapter(ABC):
         i.e. config["games"][self.game_id]."""
         self.cfg = game_config
 
+    @property
+    @abstractmethod
+    def default_save_name(self) -> str:
+        """The currently-configured save name (world/server name) for this
+        game -- the one every save_name=None call below falls back to, so
+        every pre-multi-save call site (Overview tab's Host Now/Force
+        Upload/Force Download) keeps operating on exactly the save it
+        always has, unchanged."""
+        ...
+
     # -- process control --
 
     @abstractmethod
@@ -64,29 +75,49 @@ class GameAdapter(ABC):
     # business -- core/ only ever deals in zip files) --
 
     @abstractmethod
-    def has_local_save(self) -> bool:
-        """Whether this game's save actually exists on disk yet, given its
-        current config. Used to decide which configured games are
-        "supported" for multi-game manual sync -- a game the user has
-        configured but never played on this machine shouldn't get a
-        Force Upload/Download row."""
+    def has_local_save(self, save_name: str | None = None) -> bool:
+        """Whether the given save (default_save_name if not given) actually
+        exists on disk yet, given its current config. Used to decide which
+        configured games are "supported" for multi-game manual sync -- a
+        game the user has configured but never played on this machine
+        shouldn't get a Force Upload/Download row."""
         ...
 
     @abstractmethod
-    def backup_local_save(self, backup_dir: Path) -> None: ...
+    def backup_local_save(self, backup_dir: Path, save_name: str | None = None) -> None: ...
 
     @abstractmethod
-    def zip_save(self, dest_zip: Path) -> None: ...
+    def zip_save(self, dest_zip: Path, save_name: str | None = None) -> None: ...
 
     @abstractmethod
-    def unzip_save(self, src_zip: Path) -> None: ...
+    def unzip_save(self, src_zip: Path) -> None:
+        """Extracts a zip built by zip_save straight into this game's saves
+        folder. No save_name parameter needed: zip_save always embeds the
+        real on-disk save name as the archive's own internal relative
+        path, so extraction reconstructs the right save/subfolder
+        regardless of which save is currently configured as default."""
+        ...
+
+    @abstractmethod
+    def list_local_saves(self) -> list[str]:
+        """Every save name found on disk for this game right now,
+        independent of what's configured as the default -- drives the
+        Saves tab's local-save discovery."""
+        ...
+
+    @abstractmethod
+    def save_stat(self, save_name: str) -> tuple[datetime | None, int | None]:
+        """(latest modified time, total size in bytes) across the given
+        save's on-disk data, or (None, None) if it doesn't exist -- drives
+        the Saves tab's Modified/Size columns."""
+        ...
 
     # -- optional: not every game exposes a join-code-style concept --
 
     def scrape_join_code(self) -> str | None:
         return None
 
-    def content_hash(self) -> str | None:
+    def content_hash(self, save_name: str | None = None) -> str | None:
         """A hash of the actual save DATA on disk right now, independent
         of file timestamps or which on-disk format is in use -- lets
         Force Upload detect "nothing's actually changed since I last
@@ -102,6 +133,16 @@ class GameAdapter(ABC):
 
     # -- storage namespacing --
 
+    def slot_id_for(self, save_name: str) -> str:
+        """The stable, filesystem/bucket-key/coordinator-map-safe id for a
+        given save name -- the same sanitized form save_key_prefix_for
+        already embeds, exposed on its own so callers (SessionController,
+        the Saves tab) can use it as a dict key without re-deriving it."""
+        return sanitize_key_component(save_name)
+
+    def save_key_prefix_for(self, save_name: str) -> str:
+        return f"{self.game_id}_{self.slot_id_for(save_name)}_"
+
     @property
     def save_key_prefix(self) -> str:
-        return f"{self.game_id}_save_"
+        return self.save_key_prefix_for(self.default_save_name)

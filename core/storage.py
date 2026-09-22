@@ -110,8 +110,13 @@ class LocalSaveRecord:
     coordinator's authoritative save_key rather than trusting stale/edited
     local state."""
 
-    def __init__(self, app_dir: Path, game_id: str, key_prefix: str):
-        self.path = app_dir / f"local_version_{game_id}.txt"
+    def __init__(self, app_dir: Path, game_id: str, key_prefix: str, slot_id: str | None = None):
+        # slot_id=None reproduces the original filename exactly, so the
+        # default save's tracking file (and every pre-multi-save
+        # installation's existing file) is untouched -- only a non-default
+        # slot gets a suffixed filename of its own.
+        suffix = f"_{slot_id}" if slot_id else ""
+        self.path = app_dir / f"local_version_{game_id}{suffix}.txt"
         self.pattern = re.compile(rf"^{re.escape(key_prefix)}\d+\.zip$")
 
     def read(self) -> str | None:
@@ -135,8 +140,11 @@ class LocalContentHash:
     it can't answer "has anything actually changed since I last synced."
     Per game, same as LocalSaveRecord."""
 
-    def __init__(self, app_dir: Path, game_id: str):
-        self.path = app_dir / f"local_content_hash_{game_id}.txt"
+    def __init__(self, app_dir: Path, game_id: str, slot_id: str | None = None):
+        # slot_id=None reproduces the original filename exactly -- see
+        # LocalSaveRecord.__init__'s comment above, same rationale.
+        suffix = f"_{slot_id}" if slot_id else ""
+        self.path = app_dir / f"local_content_hash_{game_id}{suffix}.txt"
 
     def read(self) -> str | None:
         if not self.path.exists():

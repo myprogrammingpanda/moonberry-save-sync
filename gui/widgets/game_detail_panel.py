@@ -10,10 +10,21 @@ import logging
 import threading
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from gui.widgets.game_settings_dialog import GameSettingsDialog
 from gui.widgets.game_sync_row import GameSyncRow
+from gui.widgets.save_table import SaveTableWidget
 
 log = logging.getLogger("moonberry-sync")
 
@@ -31,7 +42,14 @@ class GameDetailPanel(QWidget):
         self.game_id = game_id
         self.controller = controller
 
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        overview_tab = QWidget()
+        layout = QVBoxLayout(overview_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
@@ -90,9 +108,34 @@ class GameDetailPanel(QWidget):
 
         layout.addStretch()
 
+        self.tabs.addTab(overview_tab, "Overview")
+
+        self.save_table = SaveTableWidget(game_id, controller)
+        self.tabs.addTab(self.save_table, "Saves")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         self.host_now_finished.connect(self._on_host_now_finished)
         self.ready_for_launch.connect(self._on_ready_for_launch)
         self.game_started.connect(self._on_game_started)
+        self.sync_row.busy_changed.connect(self._set_busy)
+        self.save_table.busy_changed.connect(self._set_busy)
+
+    def _on_tab_changed(self, index: int) -> None:
+        if self.tabs.widget(index) is self.save_table:
+            self.save_table.refresh_local_scan()
+
+    def _set_busy(self, busy: bool) -> None:
+        """Disables every action across both tabs while ANY one of them is
+        mid-flight. Overview's Host Now/Force Upload/Force Download and
+        every Saves-tab row's Host/Sync action all share one _sync_lock on
+        the controller -- only one can genuinely run at a time -- so this
+        keeps the UI honest about that instead of letting a second click
+        just silently fail with "already in progress" from a background
+        thread."""
+        self.host_button.setEnabled(not busy)
+        self.play_button.setEnabled(not busy)
+        self.sync_row.set_enabled(not busy)
+        self.save_table.set_rows_enabled(not busy)
 
     # -- per-game settings --
 
@@ -116,8 +159,7 @@ class GameDetailPanel(QWidget):
             QMessageBox.critical(self, "Launch failed", f"Could not launch {self.controller.adapter.display_name}: {e}")
 
     def _on_host_now(self):
-        self.host_button.setEnabled(False)
-        self.play_button.setEnabled(False)
+        self._set_busy(True)
         self.status_label.setText("Claiming host...")
 
         def worker():
@@ -145,8 +187,7 @@ class GameDetailPanel(QWidget):
         self.host_stack.setCurrentWidget(self.host_button)  # still disabled -- session's still wrapping up
 
     def _on_host_now_finished(self, success: bool, msg: str):
-        self.host_button.setEnabled(True)
-        self.play_button.setEnabled(True)
+        self._set_busy(False)
         self.stop_host_button.setEnabled(False)
         self.host_stack.setCurrentWidget(self.host_button)
         if success:
@@ -154,7 +195,7 @@ class GameDetailPanel(QWidget):
         else:
             QMessageBox.critical(self, "Host Now", msg)
 
-    # -- status text, driven by MainWindow's shared StatusPoller --
+    # -- status, driven by MainWindow's shared StatusPoller --
 
     def set_status_text(self, text: str) -> None:
         # While Host Now is running (host_button disabled), its own
@@ -163,3 +204,10 @@ class GameDetailPanel(QWidget):
         # idle/hosted-by-someone-else text would otherwise fight with that.
         if self.host_button.isEnabled():
             self.status_label.setText(text)
+
+    def set_status(self, status: dict | None) -> None:
+        """Forwards the shared poller's raw status dict to the Saves tab
+        -- the only per-poll-cycle work it does; local disk scanning stays
+        gated on that tab actually having been opened (see
+        SaveTableWidget._activated)."""
+        self.save_table.set_status(status)

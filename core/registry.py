@@ -46,6 +46,7 @@ def build_game_controllers(
             local_content_hash=local_content_hash,
             notifier=notifier,
             player_name=player_name,
+            cfg=cfg,
             max_saved_versions=cfg.get("max_saved_versions", 5),
         )
 

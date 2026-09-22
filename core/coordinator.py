@@ -18,11 +18,16 @@ class Coordinator:
         r.raise_for_status()
         return r.json()
 
-    def claim_host(self, game_id: str) -> dict:
+    def claim_host(self, game_id: str, save_slot: str, save_display_name: str) -> dict:
         r = requests.post(
             f"{self.worker_url}/claim",
             headers=self._headers(),
-            json={"name": self.player_name, "game_id": game_id},
+            json={
+                "name": self.player_name,
+                "game_id": game_id,
+                "save_slot": save_slot,
+                "save_display_name": save_display_name,
+            },
             timeout=10,
         )
         return r.json()

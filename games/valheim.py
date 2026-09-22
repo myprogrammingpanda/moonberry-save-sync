@@ -14,7 +14,7 @@ from pathlib import Path
 
 import psutil
 
-from core.game_base import GameAdapter, sanitize_key_component
+from core.game_base import GameAdapter
 
 log = logging.getLogger("moonberry-sync")
 
@@ -38,14 +38,16 @@ class ValheimAdapter(GameAdapter):
     ]
 
     @property
-    def save_key_prefix(self) -> str:
-        # gamename_worldname, e.g. "valheim_MyWorld_" -- existing saves
-        # under the old "world_save_" prefix were migrated forward to this
-        # scheme via scripts/migrate_save_key_prefix.py rather than left
-        # orphaned; see that script if this ever needs to happen again
-        # (e.g. after renaming the world).
-        world_name = sanitize_key_component(self.cfg["valheim_world_name"])
-        return f"valheim_{world_name}_"
+    def default_save_name(self) -> str:
+        return self.cfg["valheim_world_name"]
+
+    # save_key_prefix (gamename_worldname, e.g. "valheim_MyWorld_") is
+    # inherited from GameAdapter.save_key_prefix, built from
+    # default_save_name above -- existing saves under the old
+    # "world_save_" prefix were migrated forward to this scheme via
+    # scripts/migrate_save_key_prefix.py rather than left orphaned; see
+    # that script if this ever needs to happen again (e.g. after renaming
+    # the world).
 
     # -- process control --
 
@@ -61,7 +63,7 @@ class ValheimAdapter(GameAdapter):
 
     # -- save format detection --
 
-    def _get_world_target(self):
+    def _get_world_target(self, save_name: str | None = None):
         """
         Valheim 1.0 changed the world save format entirely: pre-1.0, a world
         was two flat files (name.db + name.fwl). As of 1.0, it's a whole
@@ -76,7 +78,7 @@ class ValheimAdapter(GameAdapter):
                 ("files", [Path, Path]) for the legacy pre-1.0 format.
         """
         folder = Path(self.cfg["valheim_worlds_folder"])
-        name = self.cfg["valheim_world_name"]
+        name = save_name or self.default_save_name
 
         new_format_dir = folder / name
         if new_format_dir.is_dir():
@@ -84,20 +86,47 @@ class ValheimAdapter(GameAdapter):
 
         return "files", [folder / f"{name}.db", folder / f"{name}.fwl"]
 
-    def has_local_save(self) -> bool:
-        kind, target = self._get_world_target()
+    def has_local_save(self, save_name: str | None = None) -> bool:
+        kind, target = self._get_world_target(save_name)
         if kind == "folder":
             return target.is_dir()
         return all(f.exists() for f in target)
 
-    def content_hash(self) -> str | None:
+    def list_local_saves(self) -> list[str]:
+        """Every world name found in valheim_worlds_folder, whichever
+        format (1.0+ folder or legacy flat-file pair) it's actually stored
+        in. Doesn't filter anything out -- Valheim doesn't leave stray
+        non-world siblings in this folder the way Zomboid does."""
+        folder = Path(self.cfg["valheim_worlds_folder"])
+        if not folder.is_dir():
+            return []
+        names = set()
+        for entry in folder.iterdir():
+            if entry.is_dir():
+                names.add(entry.name)  # 1.0+ folder format
+            elif entry.suffix == ".fwl":
+                names.add(entry.stem)  # legacy pre-1.0 format
+        return sorted(names)
+
+    def save_stat(self, save_name: str) -> tuple[datetime | None, int | None]:
+        kind, target = self._get_world_target(save_name)
+        if kind == "folder":
+            files = [f for f in target.rglob("*") if f.is_file()] if target.is_dir() else []
+        else:
+            files = [f for f in target if f.exists()]
+        if not files:
+            return None, None
+        stats = [f.stat() for f in files]
+        return datetime.fromtimestamp(max(s.st_mtime for s in stats)), sum(s.st_size for s in stats)
+
+    def content_hash(self, save_name: str | None = None) -> str | None:
         """Hashes actual file bytes, not mtimes, in a stable sorted order
         -- so it matches regardless of when the save was last touched on
         disk, and regardless of which zip_save() run produced a given
         upload (zip_save embeds per-file timestamps, so re-zipping an
         UNCHANGED save folder still produces byte-different zips; this
         looks past that to the real data)."""
-        kind, target = self._get_world_target()
+        kind, target = self._get_world_target(save_name)
         hasher = hashlib.sha256()
 
         if kind == "folder":
@@ -119,7 +148,7 @@ class ValheimAdapter(GameAdapter):
 
         return hasher.hexdigest()
 
-    def backup_local_save(self, backup_dir: Path) -> None:
+    def backup_local_save(self, backup_dir: Path, save_name: str | None = None) -> None:
         """Keep a timestamped copy of the current local save before
         overwriting, just in case something goes wrong with a cloud sync.
         Handles both the 1.0+ folder format and the legacy flat-file
@@ -127,7 +156,7 @@ class ValheimAdapter(GameAdapter):
         backup_dir.mkdir(exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        kind, target = self._get_world_target()
+        kind, target = self._get_world_target(save_name)
         if kind == "folder":
             if target.exists():
                 shutil.copytree(target, backup_dir / f"{target.name}_{stamp}")
@@ -137,7 +166,7 @@ class ValheimAdapter(GameAdapter):
                     shutil.copy2(f, backup_dir / f"{f.stem}_{stamp}{f.suffix}")
         log.info("Backed up local save (if present) to %s", backup_dir)
 
-    def zip_save(self, dest_zip: Path) -> None:
+    def zip_save(self, dest_zip: Path, save_name: str | None = None) -> None:
         """
         Zips whatever format is actually present. For the 1.0+ folder
         format, the world name is preserved as a path prefix inside the zip
@@ -145,7 +174,7 @@ class ValheimAdapter(GameAdapter):
         worlds_local correctly recreates the subfolder -- not just dumps
         loose chunk files into worlds_local directly.
         """
-        kind, target = self._get_world_target()
+        kind, target = self._get_world_target(save_name)
         with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             if kind == "folder":
                 for f in target.rglob("*"):
