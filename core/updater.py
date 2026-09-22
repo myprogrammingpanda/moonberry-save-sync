@@ -182,8 +182,7 @@ rmdir /s /q "%STAGING_DIR%" 2>nul
 echo Update complete. Relaunching...
 start "" "%APP_DIR%\\run.bat"
 
-timeout /t 2 /nobreak >nul
-exit
+exit /b 0
 """
 
 
