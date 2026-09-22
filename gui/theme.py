@@ -19,6 +19,7 @@ PALETTES = {
         "warning": "#8a5a00",
         "error": "#b02a2a",
         "accent": "#0a66c2",
+        "success": "#1f8a3d",
         "border": "#c9c9c9",
         "dim": "#6b6b6b",
     },
@@ -32,6 +33,7 @@ PALETTES = {
         "warning": "#e0a951",
         "error": "#e06c6c",
         "accent": "#3a8ee6",
+        "success": "#4caf50",
         "border": "#3c3c3c",
         "dim": "#9a9a9a",
     },
@@ -149,13 +151,29 @@ def build_stylesheet(palette: dict) -> str:
         color: #ffffff;
         border-color: {p['error']};
         font-weight: 600;
-        padding: 8px 20px;
+        padding: 8px 10px;
     }}
     QPushButton[role="danger"]:hover:!disabled {{
         background: {p['error']};
         border-color: {p['fg']};
     }}
     QPushButton[role="danger"]:disabled {{
+        background: {p['border']};
+        color: {p['dim']};
+        border-color: {p['border']};
+    }}
+    QPushButton[role="success"] {{
+        background: {p['success']};
+        color: #ffffff;
+        border-color: {p['success']};
+        font-weight: 600;
+        padding: 8px 10px;
+    }}
+    QPushButton[role="success"]:hover:!disabled {{
+        background: {p['success']};
+        border-color: {p['fg']};
+    }}
+    QPushButton[role="success"]:disabled {{
         background: {p['border']};
         color: {p['dim']};
         border-color: {p['border']};

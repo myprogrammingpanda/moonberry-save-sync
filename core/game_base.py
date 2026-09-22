@@ -73,6 +73,20 @@ class GameAdapter(ABC):
     def scrape_join_code(self) -> str | None:
         return None
 
+    def content_hash(self) -> str | None:
+        """A hash of the actual save DATA on disk right now, independent
+        of file timestamps or which on-disk format is in use -- lets
+        Force Upload detect "nothing's actually changed since I last
+        synced" and skip creating a pointless duplicate version. A
+        save_key comparison alone can't tell this: save_key only tracks
+        which cloud version this machine last saw, not whether the local
+        content has since diverged from it, and two zips of an unchanged
+        save folder can differ byte-for-byte purely from embedded mtimes.
+        Optional -- returns None (meaning "can't tell, don't skip") by
+        default; only worth implementing if hashing the save format is
+        cheap and unambiguous."""
+        return None
+
     # -- storage namespacing --
 
     @property

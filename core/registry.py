@@ -11,7 +11,7 @@ from pathlib import Path
 from core.coordinator import Coordinator
 from core.notifications import DiscordNotifier, UpdateChecker
 from core.session import SessionController
-from core.storage import LocalSaveRecord, SaveStorage
+from core.storage import LocalContentHash, LocalSaveRecord, SaveStorage
 
 log = logging.getLogger("moonberry-sync")
 
@@ -48,6 +48,7 @@ def build_game_controllers(
 
         storage = SaveStorage(cfg, key_prefix=adapter.save_key_prefix)
         local_record = LocalSaveRecord(app_dir, adapter.game_id, adapter.save_key_prefix)
+        local_content_hash = LocalContentHash(app_dir, adapter.game_id)
 
         controllers[game_id] = SessionController(
             app_dir=app_dir,
@@ -55,6 +56,7 @@ def build_game_controllers(
             coordinator=coordinator,
             storage=storage,
             local_record=local_record,
+            local_content_hash=local_content_hash,
             notifier=notifier,
             update_checker=update_checker,
             player_name=player_name,

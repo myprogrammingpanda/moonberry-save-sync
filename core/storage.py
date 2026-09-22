@@ -114,3 +114,25 @@ class LocalSaveRecord:
 
     def write(self, key: str):
         self.path.write_text(key)
+
+
+class LocalContentHash:
+    """Tracks a hash of the local save's actual content data (from
+    GameAdapter.content_hash()) as of the last time it was known to match
+    the cloud -- either just uploaded or just downloaded. Separate from
+    LocalSaveRecord: that tracks WHICH cloud version string this machine
+    last saw, not whether the local content has since drifted from it, so
+    it can't answer "has anything actually changed since I last synced."
+    Per game, same as LocalSaveRecord."""
+
+    def __init__(self, app_dir: Path, game_id: str):
+        self.path = app_dir / f"local_content_hash_{game_id}.txt"
+
+    def read(self) -> str | None:
+        if not self.path.exists():
+            return None
+        content = self.path.read_text().strip()
+        return content or None
+
+    def write(self, content_hash: str):
+        self.path.write_text(content_hash)

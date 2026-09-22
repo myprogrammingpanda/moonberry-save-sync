@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -121,7 +122,7 @@ class MainWindow(QMainWindow):
         self.play_button.clicked.connect(self._on_play_now)
 
         self.host_button = QPushButton("Host Now")
-        self.host_button.setProperty("role", "primary")
+        self.host_button.setProperty("role", "success")
         self.host_button.setToolTip(
             "Claims the host slot, syncs your save, then waits for you to start the game."
         )
@@ -140,9 +141,21 @@ class MainWindow(QMainWindow):
         # so swapping which one occupies that spot reads more clearly than
         # a third separate button sitting next to it.
         self.host_stack = QStackedWidget()
+        # QStackedWidget defaults to an Expanding horizontal size policy
+        # (unlike QPushButton's Preferred), so it would otherwise consume
+        # extra layout space beyond what its current page actually needs
+        # -- matching QPushButton's policy keeps it sized to its content.
+        self.host_stack.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.host_stack.addWidget(self.host_button)
         self.host_stack.addWidget(self.stop_host_button)
         self.host_stack.setCurrentWidget(self.host_button)
+
+        # Match Play Now's width exactly -- it's the widest of the three
+        # (Host Now and Stop Host are both shorter texts), so this can
+        # only ever add room, never risk clipping either one.
+        equal_width = self.play_button.sizeHint().width()
+        self.play_button.setFixedWidth(equal_width)
+        self.host_stack.setFixedWidth(equal_width)
 
         play_row = QHBoxLayout()
         play_row.addWidget(self.host_stack)

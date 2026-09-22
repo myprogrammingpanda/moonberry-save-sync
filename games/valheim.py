@@ -2,6 +2,7 @@
 detection, and launching. Everything here is ported as-is from the original
 tested app -- only the packaging into a GameAdapter is new."""
 
+import hashlib
 import logging
 import os
 import re
@@ -85,6 +86,35 @@ class ValheimAdapter(GameAdapter):
         if kind == "folder":
             return target.is_dir()
         return all(f.exists() for f in target)
+
+    def content_hash(self) -> str | None:
+        """Hashes actual file bytes, not mtimes, in a stable sorted order
+        -- so it matches regardless of when the save was last touched on
+        disk, and regardless of which zip_save() run produced a given
+        upload (zip_save embeds per-file timestamps, so re-zipping an
+        UNCHANGED save folder still produces byte-different zips; this
+        looks past that to the real data)."""
+        kind, target = self._get_world_target()
+        hasher = hashlib.sha256()
+
+        if kind == "folder":
+            if not target.is_dir():
+                return None
+            files = sorted(f for f in target.rglob("*") if f.is_file())
+            if not files:
+                return None
+            for f in files:
+                hasher.update(str(f.relative_to(target)).encode("utf-8"))
+                hasher.update(f.read_bytes())
+        else:
+            existing = sorted((f for f in target if f.exists()), key=lambda p: p.name)
+            if not existing:
+                return None
+            for f in existing:
+                hasher.update(f.name.encode("utf-8"))
+                hasher.update(f.read_bytes())
+
+        return hasher.hexdigest()
 
     def backup_local_save(self, backup_dir: Path) -> None:
         """Keep a timestamped copy of the current local save before

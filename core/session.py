@@ -25,6 +25,7 @@ class SessionController:
         coordinator,
         storage,
         local_record,
+        local_content_hash,
         notifier,
         update_checker,
         player_name: str,
@@ -36,6 +37,7 @@ class SessionController:
         self.coordinator = coordinator
         self.storage = storage
         self.local_record = local_record
+        self.local_content_hash = local_content_hash
         self.notifier = notifier
         self.update_checker = update_checker
         self.player_name = player_name
@@ -101,12 +103,23 @@ class SessionController:
                 self.adapter.unzip_save(tmp_zip)
                 tmp_zip.unlink(missing_ok=True)
                 self.local_record.write(effective_cloud_key)
+                self._refresh_content_hash()
                 log.info("Local save updated to '%s'.", effective_cloud_key)
                 return True
             return False
         else:
             log.info("Local save is already up to date ('%s').", local_save_key)
             return True
+
+    def _refresh_content_hash(self) -> None:
+        """Records the current on-disk save's content hash as "last known
+        synced" -- called right after a successful upload or download, so
+        the next Force Upload can tell whether anything's actually
+        changed since. A no-op if the adapter doesn't implement hashing
+        (content_hash() returning None)."""
+        content_hash = self.adapter.content_hash()
+        if content_hash:
+            self.local_content_hash.write(content_hash)
 
     # How long Host Now waits for you to actually start the game yourself
     # after claiming and syncing -- much longer than the old "did the
@@ -272,6 +285,7 @@ class SessionController:
             if uploaded_successfully:
                 self.coordinator.release_host(save_key=uploaded_key)
                 self.local_record.write(uploaded_key)
+                self._refresh_content_hash()
                 log.info(
                     "Save uploaded ('%s') and host slot released. Thanks for playing!",
                     uploaded_key,
@@ -286,6 +300,61 @@ class SessionController:
             return True, f"Session ended — save uploaded as '{uploaded_key}'."
         return False, "Session ended without a successful upload — see log for details."
 
+    def check_upload_redundancy(self) -> tuple[bool, str]:
+        """Compares the current on-disk save's content against the hash
+        recorded the last time this machine's save was known to match the
+        cloud (just uploaded or just downloaded). A save_key match alone
+        (see check_upload_freshness) can't catch this: it only tells you
+        the local save isn't BEHIND the cloud, not whether it's actually
+        CHANGED since your own last sync -- clicking Force Upload twice in
+        a row with nothing played in between would pass that check both
+        times, minting a pointless duplicate version and pruning away a
+        real, distinct older one to make room for it. Returns
+        (is_unchanged, message); message is empty when not redundant (or
+        when there's no baseline hash yet to compare against, e.g. before
+        this machine's first upload/download since this feature shipped)."""
+        current_hash = self.adapter.content_hash()
+        if not current_hash:
+            return False, ""  # adapter doesn't support hashing, or nothing on disk yet
+
+        last_known_hash = self.local_content_hash.read()
+        if not last_known_hash or current_hash != last_known_hash:
+            return False, ""
+
+        return True, "Your save hasn't changed since your last upload or download — nothing new to upload."
+
+    def check_upload_freshness(self) -> tuple[bool, str]:
+        """Compares the local save record against what the coordinator
+        currently reports as the latest version. Force Upload has no
+        other version awareness at all -- it just zips and uploads
+        whatever's on disk, minting a key that's always newer by
+        timestamp regardless of what's actually inside it, so a friend
+        whose local save is behind could otherwise silently make their
+        stale copy the new "official" version for the whole group and
+        regress everyone else's next sync. Returns (is_stale, message);
+        message is empty when not stale. Fails open (not stale, so the
+        upload proceeds) if the coordinator can't be reached right now --
+        the actual claim attempt right after this will surface that on
+        its own."""
+        try:
+            status = self.coordinator.get_status()
+        except requests.RequestException:
+            return False, ""
+
+        cloud_key = status.get("save_key")
+        if not cloud_key:
+            return False, ""  # coordinator has no versioned save yet -- nothing to compare against
+
+        if cloud_key == self.local_record.read():
+            return False, ""
+
+        return True, (
+            f"Your local save doesn't match the latest cloud version ('{cloud_key}'). "
+            "Uploading now will make your current local save the new official version "
+            "for everyone -- if it's actually older, this could undo others' progress. "
+            "Continue anyway?"
+        )
+
     def force_upload_current_save(self) -> tuple[bool, str]:
         """Uploads whatever's currently in the save folder as a new
         version, independent of whether this app was used to host a
@@ -295,7 +364,10 @@ class SessionController:
         (this fails for ANY current claim-holder, not just other
         players -- the coordinator's /claim is a strict atomic check,
         not an identity check). Launching the game is skipped entirely;
-        this is upload-only."""
+        this is upload-only. Doesn't check version freshness itself --
+        see check_upload_freshness, called separately by the GUI before
+        this, so the (possibly slow) coordinator round-trip for that
+        check doesn't block acquiring _sync_lock unnecessarily."""
         if self.adapter.is_running():
             return False, f"{self.adapter.display_name} is currently running — close it first."
         if not self._sync_lock.acquire(blocking=False):
@@ -331,6 +403,7 @@ class SessionController:
             if uploaded_successfully:
                 self.coordinator.release_host(save_key=uploaded_key)
                 self.local_record.write(uploaded_key)
+                self._refresh_content_hash()
                 self.storage.prune_old_saves(keep=self.max_saved_versions)
             else:
                 self.coordinator.release_host()
