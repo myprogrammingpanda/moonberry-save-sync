@@ -180,7 +180,12 @@ if errorlevel 1 (
 rmdir /s /q "%STAGING_DIR%" 2>nul
 
 echo Update complete. Relaunching...
-start "" "%APP_DIR%\\run.bat"
+REM `start` special-cases .bat/.cmd targets: it launches them via
+REM "cmd /K" (run, then keep the window open) instead of "/C" (run,
+REM then close), unlike any other target. Routing through an explicit
+REM "cmd /c" ourselves forces normal run-then-close behavior, so this
+REM relaunch's own window closes itself the same way this helper's does.
+start "" cmd /c "%APP_DIR%\\run.bat"
 
 exit /b 0
 """
