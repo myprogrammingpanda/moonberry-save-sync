@@ -29,7 +29,17 @@ class SaveStorage:
         self.access_key = cfg.get("storage_access_key_id", cfg.get("r2_access_key_id"))
         self.secret_key = cfg.get("storage_secret_access_key", cfg.get("r2_secret_access_key"))
         self.bucket = cfg.get("storage_bucket_name", cfg.get("r2_bucket_name"))
-        self.legacy_key = cfg.get("storage_object_key", cfg.get("r2_object_key", "world_save.zip"))
+        # No default here on purpose: "world_save.zip" used to be hardcoded
+        # as the fallback, a one-time migration aid for Valheim's original
+        # unversioned save from before the versioned-per-game scheme (or
+        # multi-game support) existed. Defaulting it for every game meant
+        # any OTHER game's SaveStorage fell back to that exact same literal
+        # key too, on a fresh coordinator with no save_key recorded yet --
+        # confirmed as a real bug: Zomboid's Host Now downloaded and
+        # unzipped whatever sat at that key (an old, unrelated legacy
+        # object) into its own save folder. Only used if a config actually
+        # sets it explicitly.
+        self.legacy_key = cfg.get("storage_object_key", cfg.get("r2_object_key"))
         self.key_prefix = key_prefix
 
     def _client(self):

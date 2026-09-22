@@ -107,15 +107,23 @@ class SessionController:
         # Fallback for the transition period right after upgrading to the
         # versioned-save scheme: if the coordinator doesn't have a save_key
         # yet, fall back to the old static filename so existing saves
-        # aren't stranded.
+        # aren't stranded. self.storage.legacy_key is None unless a config
+        # explicitly sets one (see core/storage.py) -- most games (anything
+        # that isn't Valheim's original pre-multi-game save) will never
+        # have one, which is correct: they never had unversioned legacy
+        # data to migrate from in the first place.
         effective_cloud_key = cloud_save_key or self.storage.legacy_key
 
-        if not cloud_save_key:
+        if not cloud_save_key and effective_cloud_key:
             log.info(
                 "Coordinator has no versioned save_key yet -- falling back to "
                 "legacy filename '%s' for this sync.",
                 effective_cloud_key,
             )
+
+        if not effective_cloud_key:
+            log.info("No cloud save known yet for %s -- nothing to sync down.", self.adapter.display_name)
+            return True
 
         if effective_cloud_key != local_save_key:
             log.info(
