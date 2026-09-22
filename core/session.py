@@ -448,13 +448,19 @@ class SessionController:
             return True, "Local save is up to date with the latest cloud version."
         return False, "Download failed — see log for details."
 
-    def run_loop(self, update_status_text=None, notify_desktop=None):
+    def run_loop(self, update_status_text=None, notify_desktop=None, on_update_available=None):
         """Purely passive now: reports who's hosting (and notifies once
         per new host), and self-heals a stale claim left over from a
         crashed previous run. Doesn't drive Play Now or Host Now itself --
         both act immediately on click instead of going through this poll
         loop, since neither needs to wait for "the right moment" the way
-        the old single-button auto-host flow did."""
+        the old single-button auto-host flow did.
+
+        on_update_available, if given, is called every idle poll with the
+        currently known release info dict (from UpdateChecker, see
+        latest_release_info) or None if no update is currently known --
+        lets the GUI show/hide an "Update Now" button without duplicating
+        UpdateChecker's own GitHub API call."""
         last_notified_host = None  # tracks who we've already notified about,
         # so we only pop a notification ONCE per session start, not every
         # poll cycle while that person keeps hosting.
@@ -514,6 +520,8 @@ class SessionController:
                             update_status_text(f"Idle | {update_msg}")
                         else:
                             update_status_text("Idle")
+                    if on_update_available:
+                        on_update_available(self.update_checker.latest_release_info())
 
             except requests.RequestException as e:
                 log.error("Coordinator unreachable: %s", e)

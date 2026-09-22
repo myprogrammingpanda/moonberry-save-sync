@@ -60,6 +60,16 @@ class UpdateChecker:
         self.interval_seconds = interval_seconds
         self._last_check = 0.0
         self._cached_message: str | None = None
+        self._cached_release: dict | None = None
+
+    def latest_release_info(self) -> dict | None:
+        """Full parsed GitHub release JSON for the currently known update,
+        if any -- None if no update is available, or check() hasn't run
+        yet. check() itself only needs the tag/url for the status message;
+        the updater needs the rest of this (the release's asset list) to
+        find the file to actually download, so it's cached here alongside
+        the message rather than fetched a second time."""
+        return self._cached_release
 
     def check(self) -> str | None:
         if not self.repo:
@@ -83,6 +93,7 @@ class UpdateChecker:
             if latest_tag and latest_tag != self.current_version:
                 release_url = data.get("html_url", f"https://github.com/{self.repo}/releases/latest")
                 self._cached_message = f"Update available: v{latest_tag} — {release_url}"
+                self._cached_release = data
                 log.info(
                     "A new version is available: v%s (you're on v%s). Get it: %s",
                     latest_tag,
@@ -91,6 +102,7 @@ class UpdateChecker:
                 )
             else:
                 self._cached_message = None
+                self._cached_release = None
         except requests.RequestException as e:
             log.warning("Could not check for updates (non-fatal): %s", e)
             # keep whatever the previous cached result was rather than

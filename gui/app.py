@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 import threading
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QTextCharFormat
@@ -43,6 +44,8 @@ from gui.theme import apply_theme, resolve_theme, set_titlebar_theme
 from gui.widgets.game_sync_row import GameSyncRow
 from gui.widgets.toggle_switch import ToggleSwitch
 
+log = logging.getLogger("moonberry-sync")
+
 _LOG_COLOR_KEYS = {"WARNING": "warning", "ERROR": "error", "CRITICAL": "error"}
 
 
@@ -56,6 +59,8 @@ class MainWindow(QMainWindow):
     host_now_finished = Signal(bool, str)
     ready_for_launch = Signal()
     game_started = Signal()
+    update_info = Signal(object)
+    update_prep_finished = Signal(bool, str, str)
 
     def __init__(self, game_controllers: dict, active_game_id: str, app_version: str):
         super().__init__()
@@ -63,6 +68,8 @@ class MainWindow(QMainWindow):
         self.active_game_id = active_game_id
         self.controller = game_controllers[active_game_id]
         self.app_version = app_version
+        self._pending_release_info: dict | None = None
+        self._update_in_progress = False
 
         self.setWindowTitle(f"Moonberry Save-Sync — {self.controller.adapter.display_name}")
         self.resize(680, 540)
@@ -84,6 +91,8 @@ class MainWindow(QMainWindow):
         self.host_now_finished.connect(self._on_host_now_finished)
         self.ready_for_launch.connect(self._on_ready_for_launch)
         self.game_started.connect(self._on_game_started)
+        self.update_info.connect(self._on_update_info)
+        self.update_prep_finished.connect(self._on_update_prep_finished)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -157,9 +166,16 @@ class MainWindow(QMainWindow):
         self.play_button.setFixedWidth(equal_width)
         self.host_stack.setFixedWidth(equal_width)
 
+        self.update_button = QPushButton()
+        self.update_button.setProperty("role", "success")
+        self.update_button.setToolTip("Downloads and installs the new version, then restarts the app.")
+        self.update_button.setVisible(False)
+        self.update_button.clicked.connect(self._on_update_now)
+
         play_row = QHBoxLayout()
         play_row.addWidget(self.host_stack)
         play_row.addWidget(self.play_button)
+        play_row.addWidget(self.update_button)
         play_row.addStretch()
         layout.addLayout(play_row)
 
@@ -208,6 +224,11 @@ class MainWindow(QMainWindow):
     def _on_host_now(self):
         self.host_button.setEnabled(False)
         self.play_button.setEnabled(False)
+        # An update replaces this app's own files and restarts it -- doing
+        # that mid-session would yank the host claim (and anyone mid-sync)
+        # out from under a hosting session, so it's blocked the same way
+        # Play Now already is for the whole Host Now span.
+        self.update_button.setEnabled(False)
         self.status_changed.emit("Claiming host...")
 
         def worker():
@@ -244,12 +265,87 @@ class MainWindow(QMainWindow):
     def _on_host_now_finished(self, success: bool, msg: str):
         self.host_button.setEnabled(True)
         self.play_button.setEnabled(True)
+        self.update_button.setEnabled(self._pending_release_info is not None)
         self.stop_host_button.setEnabled(False)
         self.host_stack.setCurrentWidget(self.host_button)  # covers the cancelled-before-game-started case too
         if success:
             QMessageBox.information(self, "Host Now", msg)
         else:
             QMessageBox.critical(self, "Host Now", msg)
+
+    def _on_update_info(self, release_info: dict | None):
+        self._pending_release_info = release_info
+        self.update_button.setVisible(release_info is not None)
+        if release_info:
+            tag = release_info.get("tag_name", "").lstrip("v")
+            self.update_button.setText(f"Update to v{tag}")
+            # This fires on every idle poll (~poll_interval_seconds), so it
+            # must not stomp on either Host Now's disable span or an
+            # update download already in flight -- both easily outlast one
+            # poll interval.
+            self.update_button.setEnabled(self.host_button.isEnabled() and not self._update_in_progress)
+
+    def _on_update_now(self):
+        release_info = self._pending_release_info
+        if not release_info:
+            return
+        tag = release_info.get("tag_name", "").lstrip("v")
+        reply = QMessageBox.question(
+            self,
+            "Update Moonberry Save-Sync",
+            f"Update to v{tag}? The app will close, update, and reopen automatically.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._update_in_progress = True
+        self.update_button.setEnabled(False)
+        self.play_button.setEnabled(False)
+        self.host_button.setEnabled(False)
+        self.status_changed.emit("Downloading update...")
+
+        def report_progress(done: int, total: int | None):
+            done_kb = done // 1024
+            if total:
+                self.status_changed.emit(f"Downloading update... {done_kb} / {total // 1024} KB")
+            else:
+                self.status_changed.emit(f"Downloading update... {done_kb} KB")
+
+        def worker():
+            from core.updater import UpdateError, prepare_update
+
+            try:
+                staging_dir = prepare_update(self.controller.app_dir, release_info, progress_cb=report_progress)
+            except UpdateError as e:
+                self.update_prep_finished.emit(False, str(e), "")
+                return
+            except Exception as e:
+                log.exception("Unexpected error preparing update.")
+                self.update_prep_finished.emit(False, f"Unexpected error: {e}", "")
+                return
+            self.update_prep_finished.emit(True, "", str(staging_dir))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_prep_finished(self, success: bool, error_msg: str, staging_dir: str):
+        if not success:
+            self._update_in_progress = False
+            self.update_button.setEnabled(True)
+            self.play_button.setEnabled(True)
+            self.host_button.setEnabled(True)
+            self.status_changed.emit("Update failed.")
+            QMessageBox.critical(self, "Update failed", f"Could not prepare the update:\n\n{error_msg}")
+            return
+
+        # The helper waits for THIS process to fully exit before touching
+        # any files, so it's safe (required, even) to spawn it before the
+        # close() below actually takes effect.
+        from core.updater import begin_relaunch
+
+        self.status_changed.emit("Update ready — restarting...")
+        begin_relaunch(self.controller.app_dir, Path(staging_dir))
+        self.close()
 
     def _read_theme_pref(self) -> str:
         try:
@@ -318,7 +414,7 @@ class MainWindow(QMainWindow):
     def run_session_loop(self):
         t = threading.Thread(
             target=self.controller.run_loop,
-            args=(self.status_changed.emit, self.desktop_notify.emit),
+            args=(self.status_changed.emit, self.desktop_notify.emit, self.update_info.emit),
             daemon=True,
         )
         t.start()
