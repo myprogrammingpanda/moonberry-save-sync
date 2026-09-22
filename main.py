@@ -24,7 +24,7 @@ import sys
 import traceback
 from pathlib import Path
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
