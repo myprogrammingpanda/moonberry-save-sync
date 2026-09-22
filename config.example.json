@@ -25,6 +25,11 @@
       "valheim_world_name": "YourWorldName",
       "valheim_log_path": "%userprofile%\\AppData\\LocalLow\\IronGate\\Valheim\\Player.log",
       "valheim_launch_uri": "steam://rungameid/892970"
+    },
+    "zomboid": {
+      "zomboid_saves_folder": "%userprofile%\\Zomboid\\Saves\\Multiplayer",
+      "zomboid_server_name": "servertest",
+      "zomboid_launch_uri": "steam://run/108600"
     }
   }
 }
