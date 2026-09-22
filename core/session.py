@@ -60,6 +60,15 @@ class SessionController:
         # thread and yank the claim out from under it.
         self._host_now_pending = False
 
+        # Set by the GUI's "Stop Host" button to back out of a Host Now
+        # call that's still waiting for you to start the game -- e.g. you
+        # clicked it and changed your mind. Checked only during that wait;
+        # once the game is actually running there's nothing safe left to
+        # interrupt (killing a running game process mid-session is exactly
+        # the kind of save-corrupting risk the rest of this file exists to
+        # avoid), so it has no effect after that point.
+        self._stop_requested = threading.Event()
+
     def sync_down_if_needed(self, cloud_save_key: str | None) -> bool:
         """Downloads and applies the cloud save if the local copy doesn't
         already match it. Returns True if the local save now matches the
@@ -106,7 +115,29 @@ class SessionController:
     # other way), not on the OS finishing a process launch.
     HOST_NOW_WAIT_SECONDS = 300
 
-    def host_now(self, update_status_text=None) -> tuple[bool, str]:
+    def stop_host(self) -> None:
+        """Cancels a Host Now call that's still waiting for you to start
+        the game. Fire-and-forget: just flips a flag _wait_for_launch_or_
+        stop checks on its next poll, so the actual claim release happens
+        moments later on Host Now's own thread, surfaced through its usual
+        (bool, str) return -- this method itself has nothing to report."""
+        self._stop_requested.set()
+
+    def _wait_for_launch_or_stop(self, timeout: float) -> str:
+        """Polls for either the game starting or a stop request, instead
+        of adapter.wait_for_start's own polling loop, so Stop Host has
+        something to interrupt. Returns "started", "stopped", or
+        "timeout"."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.adapter.is_running():
+                return "started"
+            if self._stop_requested.is_set():
+                return "stopped"
+            time.sleep(2)
+        return "timeout"
+
+    def host_now(self, update_status_text=None, on_ready_for_launch=None, on_game_started=None) -> tuple[bool, str]:
         """Claims the host slot, syncs your local save, then waits for you
         to start the game yourself -- deliberately does NOT launch it (see
         Play Now for that). Refuses outright if the game's already
@@ -114,17 +145,30 @@ class SessionController:
         the write either fails outright, or succeeds and then gets
         silently overwritten again by the game's own next autosave anyway,
         since its in-memory state was never touched -- so "close it first"
-        is the only safe answer, not a special-cased partial sync."""
+        is the only safe answer, not a special-cased partial sync.
+
+        on_ready_for_launch, if given, is called with no arguments the
+        moment it becomes safe to start the game -- i.e. right after
+        syncing finishes, not before (starting it earlier could have it
+        read a save that's still being unzipped) and not only once this
+        whole call returns (which wouldn't happen until you've already
+        played and closed the game -- far too late for Play Now to still
+        be waiting on).
+
+        on_game_started, if given, is called once the game is actually
+        detected running -- the point past which Stop Host (see
+        stop_host) no longer has anything to interrupt, so the GUI can
+        disable it instead of leaving a dead, do-nothing button up."""
         if self.adapter.is_running():
             return False, f"{self.adapter.display_name} is already running — close it first, then click Host Now."
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
-            return self._host_now_locked(update_status_text)
+            return self._host_now_locked(update_status_text, on_ready_for_launch, on_game_started)
         finally:
             self._sync_lock.release()
 
-    def _host_now_locked(self, update_status_text=None) -> tuple[bool, str]:
+    def _host_now_locked(self, update_status_text=None, on_ready_for_launch=None, on_game_started=None) -> tuple[bool, str]:
         log.info("Host Now requested. Attempting to claim host...")
         result = self.coordinator.claim_host()
         if not result.get("ok"):
@@ -135,6 +179,7 @@ class SessionController:
 
         current = result["current"]
         self._host_now_pending = True
+        self._stop_requested.clear()  # fresh for this attempt -- ignore any stale flag from a previous one
 
         # CRITICAL: everything from here on is wrapped in try/finally. If
         # ANYTHING goes wrong we MUST still release the host claim in the
@@ -148,15 +193,26 @@ class SessionController:
                 update_status_text("Syncing your save...")
             self.sync_down_if_needed(current.get("save_key"))
 
+            if on_ready_for_launch:
+                on_ready_for_launch()
+
             log.info("Host claimed. Waiting for you to start %s...", self.adapter.display_name)
             if update_status_text:
                 update_status_text(
                     f"Host claimed — start {self.adapter.display_name} now (Play Now, or launch it yourself)."
                 )
-            if not self.adapter.wait_for_start(timeout=self.HOST_NOW_WAIT_SECONDS):
+            outcome = self._wait_for_launch_or_stop(self.HOST_NOW_WAIT_SECONDS)
+            if outcome == "stopped":
+                msg = "Host Now cancelled — host claim released."
+                log.info(msg)
+                return False, msg  # falls through to finally, which releases the claim
+            if outcome == "timeout":
                 msg = f"{self.adapter.display_name} wasn't started in time — host claim released."
                 log.warning(msg)
                 return False, msg  # falls through to finally, which releases the claim
+
+            if on_game_started:
+                on_game_started()
 
             log.info(
                 "You're hosting as '%s'. Friends can join you. This app "

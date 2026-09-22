@@ -144,6 +144,22 @@ def build_stylesheet(palette: dict) -> str:
         color: {p['dim']};
         border-color: {p['border']};
     }}
+    QPushButton[role="danger"] {{
+        background: {p['error']};
+        color: #ffffff;
+        border-color: {p['error']};
+        font-weight: 600;
+        padding: 8px 20px;
+    }}
+    QPushButton[role="danger"]:hover:!disabled {{
+        background: {p['error']};
+        border-color: {p['fg']};
+    }}
+    QPushButton[role="danger"]:disabled {{
+        background: {p['border']};
+        color: {p['dim']};
+        border-color: {p['border']};
+    }}
     QLineEdit, QComboBox {{
         background: {p['entry_bg']};
         color: {p['entry_fg']};

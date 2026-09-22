@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -52,6 +53,8 @@ class MainWindow(QMainWindow):
     status_changed = Signal(str)
     desktop_notify = Signal(str, str)
     host_now_finished = Signal(bool, str)
+    ready_for_launch = Signal()
+    game_started = Signal()
 
     def __init__(self, game_controllers: dict, active_game_id: str, app_version: str):
         super().__init__()
@@ -78,6 +81,8 @@ class MainWindow(QMainWindow):
         self.status_changed.connect(self.status_label.setText)
         self.desktop_notify.connect(self._on_desktop_notify)
         self.host_now_finished.connect(self._on_host_now_finished)
+        self.ready_for_launch.connect(self._on_ready_for_launch)
+        self.game_started.connect(self._on_game_started)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -122,8 +127,25 @@ class MainWindow(QMainWindow):
         )
         self.host_button.clicked.connect(self._on_host_now)
 
+        self.stop_host_button = QPushButton("Stop Host")
+        self.stop_host_button.setProperty("role", "danger")
+        self.stop_host_button.setToolTip(
+            "Cancels a Host Now call that's still waiting for you to start the game."
+        )
+        self.stop_host_button.setEnabled(False)
+        self.stop_host_button.clicked.connect(self._on_stop_host)
+
+        # Host Now and Stop Host share one slot in the layout -- Stop Host
+        # only ever makes sense in place of Host Now (never alongside it),
+        # so swapping which one occupies that spot reads more clearly than
+        # a third separate button sitting next to it.
+        self.host_stack = QStackedWidget()
+        self.host_stack.addWidget(self.host_button)
+        self.host_stack.addWidget(self.stop_host_button)
+        self.host_stack.setCurrentWidget(self.host_button)
+
         play_row = QHBoxLayout()
-        play_row.addWidget(self.host_button)
+        play_row.addWidget(self.host_stack)
         play_row.addWidget(self.play_button)
         play_row.addStretch()
         layout.addLayout(play_row)
@@ -176,14 +198,41 @@ class MainWindow(QMainWindow):
         self.status_changed.emit("Claiming host...")
 
         def worker():
-            success, msg = self.controller.host_now(update_status_text=self.status_changed.emit)
+            success, msg = self.controller.host_now(
+                update_status_text=self.status_changed.emit,
+                on_ready_for_launch=self.ready_for_launch.emit,
+                on_game_started=self.game_started.emit,
+            )
             self.host_now_finished.emit(success, msg)
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _on_ready_for_launch(self):
+        self.play_button.setEnabled(True)
+        # This is exactly the window Stop Host exists for: claimed and
+        # synced, but still waiting for you to actually start the game --
+        # cancelling stops making sense the moment it's actually running
+        # (_on_game_started swaps back and disables it again then).
+        self.stop_host_button.setEnabled(True)
+        self.host_stack.setCurrentWidget(self.stop_host_button)
+
+    def _on_stop_host(self):
+        # stop_host() just sets a flag Host Now's own thread checks on its
+        # next poll -- instant and thread-safe, no need for a thread of
+        # its own here.
+        self.stop_host_button.setEnabled(False)
+        self.status_changed.emit("Stopping...")
+        self.controller.stop_host()
+
+    def _on_game_started(self):
+        self.stop_host_button.setEnabled(False)
+        self.host_stack.setCurrentWidget(self.host_button)  # still disabled -- session's still wrapping up
+
     def _on_host_now_finished(self, success: bool, msg: str):
         self.host_button.setEnabled(True)
         self.play_button.setEnabled(True)
+        self.stop_host_button.setEnabled(False)
+        self.host_stack.setCurrentWidget(self.host_button)  # covers the cancelled-before-game-started case too
         if success:
             QMessageBox.information(self, "Host Now", msg)
         else:
