@@ -146,15 +146,26 @@ def main():
 
     cfg = load_config(CONFIG_PATH)
 
-    active_game = cfg.get("active_game")
-    if not active_game or active_game not in adapters:
-        log.error(
-            "config.json's \"active_game\" (%r) doesn't match any game found "
-            "in games/ (%s).",
-            active_game,
-            ", ".join(sorted(adapters)) or "none found",
-        )
+    configured_games = sorted(cfg.get("games", {}))
+    if not configured_games:
+        log.error("config.json has no \"games\" configured at all -- nothing to show.")
         sys.exit(1)
+
+    # active_game is now just "which sidebar item is selected by default" --
+    # every configured game gets its own controller and its own dashboard
+    # entry regardless, so a missing/stale value is worth a warning, not a
+    # fatal error.
+    active_game = cfg.get("active_game")
+    if not active_game or active_game not in adapters or active_game not in configured_games:
+        fallback = configured_games[0]
+        log.warning(
+            "config.json's \"active_game\" (%r) doesn't match a configured game (%s) -- "
+            "defaulting the dashboard's initial selection to '%s'.",
+            active_game,
+            ", ".join(configured_games),
+            fallback,
+        )
+        active_game = fallback
 
     player_name = get_player_name(APP_DIR, cfg)
 
@@ -162,11 +173,18 @@ def main():
     notifier = DiscordNotifier(cfg.get("moonberry_url"), cfg.get("moonberry_secret"))
     update_checker = UpdateChecker(cfg.get("github_repo"), APP_VERSION)
 
-    game_controllers = build_game_controllers(
-        cfg, adapters, APP_DIR, coordinator, notifier, update_checker, player_name, active_game
-    )
+    game_controllers = build_game_controllers(cfg, adapters, APP_DIR, coordinator, notifier, player_name)
 
-    App(game_controllers, active_game, APP_VERSION).run()
+    App(
+        game_controllers,
+        active_game,
+        APP_VERSION,
+        app_dir=APP_DIR,
+        coordinator=coordinator,
+        player_name=player_name,
+        update_checker=update_checker,
+        poll_interval_seconds=cfg["poll_interval_seconds"],
+    ).run()
 
 
 if __name__ == "__main__":

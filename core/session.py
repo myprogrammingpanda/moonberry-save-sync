@@ -5,7 +5,15 @@ generalized to call through a GameAdapter instead of being wired directly
 to one game -- except Host Now no longer launches the game itself (that's
 Play Now's job, a separate dumb "just open it" button); Host Now's job is
 purely the claim/sync/watch/upload lifecycle around whatever session you
-start yourself."""
+start yourself.
+
+Polling the coordinator for "who's hosting" and self-healing a stale claim
+used to live here too (run_loop), back when only one game's controller was
+ever active at a time. Now that every configured game gets its own
+controller simultaneously, that's core.status_poller.StatusPoller's job
+instead -- one shared poll loop instead of one per game, so multiple
+controllers don't each hit the coordinator and each race their own
+self-heal independently."""
 
 import logging
 import threading
@@ -27,9 +35,7 @@ class SessionController:
         local_record,
         local_content_hash,
         notifier,
-        update_checker,
         player_name: str,
-        poll_interval_seconds: float,
         max_saved_versions: int = 5,
     ):
         self.app_dir = app_dir
@@ -39,9 +45,7 @@ class SessionController:
         self.local_record = local_record
         self.local_content_hash = local_content_hash
         self.notifier = notifier
-        self.update_checker = update_checker
         self.player_name = player_name
-        self.poll_interval_seconds = poll_interval_seconds
         self.max_saved_versions = max_saved_versions
 
         # Guards every zip/upload/download flow (a real hosting session or
@@ -183,7 +187,7 @@ class SessionController:
 
     def _host_now_locked(self, update_status_text=None, on_ready_for_launch=None, on_game_started=None) -> tuple[bool, str]:
         log.info("Host Now requested. Attempting to claim host...")
-        result = self.coordinator.claim_host()
+        result = self.coordinator.claim_host(self.adapter.game_id)
         if not result.get("ok"):
             host_name = result.get("current", {}).get("host_name") or "someone"
             msg = f"Someone is currently hosting ({host_name}) — try again later."
@@ -379,7 +383,7 @@ class SessionController:
 
     def _force_upload_current_save_locked(self) -> tuple[bool, str]:
         log.info("Manual upload requested. Attempting to claim host...")
-        result = self.coordinator.claim_host()
+        result = self.coordinator.claim_host(self.adapter.game_id)
         if not result.get("ok"):
             host_name = result.get("current", {}).get("host_name") or "someone"
             msg = f"Someone is currently hosting ({host_name}) — try again later."
@@ -447,85 +451,3 @@ class SessionController:
         if ok:
             return True, "Local save is up to date with the latest cloud version."
         return False, "Download failed — see log for details."
-
-    def run_loop(self, update_status_text=None, notify_desktop=None, on_update_available=None):
-        """Purely passive now: reports who's hosting (and notifies once
-        per new host), and self-heals a stale claim left over from a
-        crashed previous run. Doesn't drive Play Now or Host Now itself --
-        both act immediately on click instead of going through this poll
-        loop, since neither needs to wait for "the right moment" the way
-        the old single-button auto-host flow did.
-
-        on_update_available, if given, is called every idle poll with the
-        currently known release info dict (from UpdateChecker, see
-        latest_release_info) or None if no update is currently known --
-        lets the GUI show/hide an "Update Now" button without duplicating
-        UpdateChecker's own GitHub API call."""
-        last_notified_host = None  # tracks who we've already notified about,
-        # so we only pop a notification ONCE per session start, not every
-        # poll cycle while that person keeps hosting.
-
-        while True:
-            try:
-                status = self.coordinator.get_status()
-
-                if (
-                    status.get("hosting")
-                    and status.get("host_name") == self.player_name
-                    and not self.adapter.is_running()
-                    and not self._host_now_pending
-                ):
-                    # This is OUR OWN claim, but the game isn't actually
-                    # running on this machine, AND no Host Now call in this
-                    # process is actively managing it (that flag covers the
-                    # legitimate wait-for-you-to-start-the-game window,
-                    # which can take minutes and looks identical to this
-                    # otherwise) -- a previous run crashed, was
-                    # force-closed, or the PC slept/lost power before it
-                    # could release the claim. Safe to auto-clear: if it
-                    # were genuinely still active, one of those two would
-                    # be true.
-                    log.warning(
-                        "Found a stale host claim from a previous run (no %s "
-                        "process is actually running). Auto-releasing it.",
-                        self.adapter.display_name,
-                    )
-                    self.coordinator.release_host()
-                    last_notified_host = None
-                    continue  # loop back around immediately to re-check status fresh
-
-                if status.get("hosting"):
-                    host_name = status.get("host_name")
-                    join_code = status.get("join_code")
-                    code_part = f" (Join Code: {join_code})" if join_code else ""
-                    msg = f"{host_name} is hosting — join now{code_part}"
-                    log.info(msg)
-                    if update_status_text:
-                        update_status_text(msg)
-
-                    # Fire a one-time notification when someone NEW starts
-                    # hosting -- but never for ourselves.
-                    if host_name != last_notified_host and host_name != self.player_name and notify_desktop:
-                        notify_desktop(
-                            "Moonberry Save-Sync",
-                            f"{host_name} started hosting — open the game to join!{code_part}",
-                        )
-                    last_notified_host = host_name
-                else:
-                    last_notified_host = None
-                    log.info("No one hosting.")
-                    update_msg = self.update_checker.check()
-                    if update_status_text:
-                        if update_msg:
-                            update_status_text(f"Idle | {update_msg}")
-                        else:
-                            update_status_text("Idle")
-                    if on_update_available:
-                        on_update_available(self.update_checker.latest_release_info())
-
-            except requests.RequestException as e:
-                log.error("Coordinator unreachable: %s", e)
-                if update_status_text:
-                    update_status_text("Coordinator unreachable — retrying...")
-
-            time.sleep(self.poll_interval_seconds)

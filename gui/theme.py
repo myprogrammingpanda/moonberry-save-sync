@@ -229,6 +229,21 @@ def build_stylesheet(palette: dict) -> str:
         border: none;
         background: transparent;
     }}
+    QListWidget {{
+        background: {p['entry_bg']};
+        color: {p['fg']};
+        border: 1px solid {p['border']};
+        border-radius: 4px;
+        outline: none;
+    }}
+    QListWidget::item {{
+        padding: 8px 10px;
+        border-bottom: 1px solid {p['border']};
+    }}
+    QListWidget::item:selected {{
+        background: {p['accent']};
+        color: #ffffff;
+    }}
     QScrollBar:vertical {{
         background: {p['bg']};
         width: 12px;
