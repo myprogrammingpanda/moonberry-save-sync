@@ -256,6 +256,8 @@ class MainWindow(QMainWindow):
             join_code = status.get("join_code")
             code_part = f" (Join Code: {join_code})" if join_code else ""
             return f"Hosting — {host_name}{code_part}"
+        if controller.adapter.setup_problem():
+            return "Needs setup"
         if not controller.adapter.has_local_save():
             return "Not set up"
         return "Idle"

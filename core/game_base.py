@@ -95,6 +95,15 @@ class GameAdapter(ABC):
         always has, unchanged."""
         ...
 
+    def setup_problem(self) -> str | None:
+        """Something on this PC that has to be fixed before any save can be
+        synced here at all, as a message telling the player what to do --
+        or None if nothing's wrong. Shown as a warning on the game's panel,
+        and Host Now / downloads refuse with it up front instead of failing
+        part-way. Not for "no save yet": a missing save is normal on a
+        fresh setup and is downloaded on first sync."""
+        return None
+
     # -- process control --
 
     @abstractmethod

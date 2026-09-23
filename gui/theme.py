@@ -111,6 +111,9 @@ def build_stylesheet(palette: dict) -> str:
     QLabel[role="dim"] {{
         color: {p['dim']};
     }}
+    QLabel[role="warning"] {{
+        color: {p['warning']};
+    }}
     QLabel[role="status"] {{
         font-weight: 600;
         font-size: 12pt;

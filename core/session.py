@@ -310,6 +310,9 @@ class SessionController:
         disable it instead of leaving a dead, do-nothing button up."""
         if self.adapter.is_running():
             return False, f"{self.adapter.display_name} is already running — close it first, then click Host Now."
+        problem = self.adapter.setup_problem()
+        if problem:  # before claiming, so nobody sees a host who can't actually sync
+            return False, problem
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:
@@ -608,6 +611,9 @@ class SessionController:
         status and the storage bucket, neither of which is exclusive."""
         if self.adapter.is_running():
             return False, f"{self.adapter.display_name} is currently running — close it first."
+        problem = self.adapter.setup_problem()
+        if problem:
+            return False, problem
         if not self._sync_lock.acquire(blocking=False):
             return False, "A sync operation is already in progress — try again in a moment."
         try:

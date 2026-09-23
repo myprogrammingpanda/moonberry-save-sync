@@ -78,6 +78,14 @@ class GameDetailPanel(QWidget):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
+        # GameAdapter.setup_problem, re-checked on every status poll so it
+        # disappears by itself once fixed.
+        self.setup_warning = QLabel("")
+        self.setup_warning.setProperty("role", "warning")
+        self.setup_warning.setWordWrap(True)
+        layout.addWidget(self.setup_warning)
+        self._refresh_setup_warning()
+
         self.play_button = QPushButton("Play Now")
         self.play_button.setProperty("role", "primary")
         self.play_button.setToolTip(f"Just opens {controller.adapter.display_name} -- doesn't claim host or sync.")
@@ -291,4 +299,10 @@ class GameDetailPanel(QWidget):
         -- the only per-poll-cycle work it does; local disk scanning stays
         gated on that tab actually having been opened (see
         SaveTableWidget._activated)."""
+        self._refresh_setup_warning()
         self.save_table.set_status(status)
+
+    def _refresh_setup_warning(self) -> None:
+        problem = self.controller.adapter.setup_problem()
+        self.setup_warning.setText(f"⚠ {problem}" if problem else "")
+        self.setup_warning.setVisible(bool(problem))

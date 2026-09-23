@@ -182,13 +182,23 @@ class DragonwildsAdapter(GameAdapter):
         # More than one Xbox account on this PC: the one that played last.
         return XboxSaveStore.latest_in(self._saves_folder)
 
+    _NO_XBOX_STORE = (
+        "Dragonwilds hasn't created its Game Pass save storage on this PC yet. "
+        "Launch the game once and create a character (or load any world), quit, "
+        "then try again."
+    )
+
+    def setup_problem(self) -> str | None:
+        # Moonberry can only add worlds to storage the game has already
+        # set up (its index carries per-account ids only the game knows).
+        if self._uses_xbox_store and self._xbox_store() is None:
+            return self._NO_XBOX_STORE
+        return None
+
     def _require_xbox_store(self) -> XboxSaveStore:
         store = self._xbox_store()
         if store is None:
-            raise RuntimeError(
-                "No Game Pass save storage found for Dragonwilds on this PC yet. "
-                "Launch the game and load or create any world once, then try again."
-            )
+            raise RuntimeError(self._NO_XBOX_STORE)
         return store
 
     # -- reading/writing one world, in either form --
