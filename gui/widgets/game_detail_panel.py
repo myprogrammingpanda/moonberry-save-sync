@@ -13,6 +13,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -111,6 +112,25 @@ class GameDetailPanel(QWidget):
         play_row.addWidget(self.play_button)
         play_row.addStretch()
         layout.addLayout(play_row)
+
+        # Only for games whose join code can't be read automatically (see
+        # GameAdapter.join_code_entry): enabled while you're actually
+        # hosting, between the game starting and the session wrapping up.
+        self.join_code_row = QWidget()
+        join_layout = QHBoxLayout(self.join_code_row)
+        join_layout.setContentsMargins(0, 0, 0, 0)
+        join_layout.addWidget(QLabel("Join code"))
+        self.join_code_edit = QLineEdit()
+        self.join_code_edit.setPlaceholderText("Paste the code from the game's pause menu")
+        self.join_code_edit.returnPressed.connect(self._on_share_join_code)
+        join_layout.addWidget(self.join_code_edit, stretch=1)
+        self.share_code_button = QPushButton("Share")
+        self.share_code_button.setToolTip("Shows this code to everyone in the group.")
+        self.share_code_button.clicked.connect(self._on_share_join_code)
+        join_layout.addWidget(self.share_code_button)
+        self.join_code_row.setVisible(controller.adapter.join_code_entry)
+        self._set_join_code_enabled(False)
+        layout.addWidget(self.join_code_row)
 
         self.sync_row = GameSyncRow(game_id, controller.adapter.display_name, controller, is_active=False)
         layout.addWidget(self.sync_row)
@@ -224,8 +244,22 @@ class GameDetailPanel(QWidget):
     def _on_game_started(self):
         self.stop_host_button.setEnabled(False)
         self.host_stack.setCurrentWidget(self.host_button)  # still disabled -- session's still wrapping up
+        self._set_join_code_enabled(True)
+
+    def _set_join_code_enabled(self, enabled: bool) -> None:
+        self.join_code_edit.setEnabled(enabled)
+        self.share_code_button.setEnabled(enabled)
+        if not enabled:
+            self.join_code_edit.clear()
+
+    def _on_share_join_code(self):
+        code = self.join_code_edit.text().strip()
+        if code and self.share_code_button.isEnabled():
+            self.controller.submit_join_code(code)
+            self.status_label.setText(f"Sharing join code {code}...")
 
     def _on_host_now_finished(self, success: bool, msg: str):
+        self._set_join_code_enabled(False)
         self._set_busy(False)
         self.stop_host_button.setEnabled(False)
         self.host_stack.setCurrentWidget(self.host_button)

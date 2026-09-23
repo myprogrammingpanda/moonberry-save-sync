@@ -185,6 +185,9 @@ def build_stylesheet(palette: dict) -> str:
         border-radius: 3px;
         padding: 4px 6px;
     }}
+    QLineEdit:disabled, QComboBox:disabled {{
+        color: {p['dim']};
+    }}
     QComboBox QAbstractItemView {{
         background: {p['entry_bg']};
         color: {p['entry_fg']};

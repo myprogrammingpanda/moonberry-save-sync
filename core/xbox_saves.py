@@ -224,7 +224,13 @@ class XboxSaveStore:
         one if more than one Xbox account has played here. None if the
         game has never saved anything yet."""
         root = cls.wgs_root(package_family_name)
-        if root is None or not root.is_dir():
+        return cls.latest_in(root) if root is not None else None
+
+    @classmethod
+    def latest_in(cls, root: Path) -> "XboxSaveStore | None":
+        """Same as find(), given the wgs folder itself."""
+        root = Path(root)
+        if not root.is_dir():
             return None
         user_dirs = [d for d in root.iterdir() if d.is_dir() and (d / INDEX_NAME).is_file()]
         if not user_dirs:

@@ -26,6 +26,7 @@ file already uses."""
 import hashlib
 import logging
 import os
+import re
 import struct
 import zipfile
 import zlib
@@ -52,10 +53,11 @@ _PROCESS_PREFIX = "rsdragonwilds"
 SAV_SUFFIX = ".sav"
 BACKUP_SUFFIX = ".sav.backup"
 
-# Game Pass container names: "." is written as "Q" and the world file
-# extension is "xav" -- "TestWorldRS" -> "TestWorldRSQxav", its backup
+# Game Pass container names: the world's slot name (see default_save_name)
+# plus "Qxav" -- "TestWorldRS" -> "TestWorldRSQxav", its backup
 # "TestWorldRSQxavQbak", character "Yinipur" -> "YinipurQjson" (observed on
-# a real install).
+# a real install). Slot names are letters and digits only, so a "Q" in one
+# is never ambiguous with the suffix.
 _XBOX_WORLD_SUFFIX = "Qxav"
 _XBOX_BACKUP_SUFFIX = "QxavQbak"
 _XBOX_FILE = "Data"
@@ -67,6 +69,10 @@ _SAVE_MAGIC = b"SAVE"
 
 _LOCAL_SAVES = r"%LOCALAPPDATA%\RSDragonwilds\Saved\SaveGames"
 _XBOX_SAVES = rf"%LOCALAPPDATA%\Packages\{STORE_PACKAGE_FAMILY}\SystemAppData\wgs"
+
+
+def slot_name(world_name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", world_name)
 
 
 def to_raw(data: bytes) -> bytes:
@@ -101,6 +107,10 @@ class DragonwildsAdapter(GameAdapter):
         ("dragonwilds_launch_uri", "Launch URI", "text"),
     ]
 
+    # The pause menu's invite code changes every session and the Game Pass
+    # build writes no log file at all, so the host pastes it in.
+    join_code_entry = True
+
     editions = {
         "steam": GameEdition(
             label="Steam",
@@ -134,7 +144,13 @@ class DragonwildsAdapter(GameAdapter):
 
     @property
     def default_save_name(self) -> str:
-        return self.cfg["dragonwilds_world_name"]
+        """The world's save-slot name, which is what files/containers are
+        named after -- the game derives it from the display name by
+        dropping spaces and punctuation ("My Q-World 2" -> "MyQWorld2",
+        seen on a real install), so either form can be typed in Settings.
+        Normalised here so this and list_local_saves() agree, and every
+        view of one world shares one storage key."""
+        return slot_name(self.cfg["dragonwilds_world_name"])
 
     # -- process control --
 
@@ -163,14 +179,8 @@ class DragonwildsAdapter(GameAdapter):
         return self._saves_folder.name.lower() == "wgs"
 
     def _xbox_store(self) -> XboxSaveStore | None:
-        root = self._saves_folder
-        if not root.is_dir():
-            return None
-        stores = [d for d in root.iterdir() if d.is_dir() and (d / "containers.index").is_file()]
-        if not stores:
-            return None
         # More than one Xbox account on this PC: the one that played last.
-        return XboxSaveStore(max(stores, key=lambda d: (d / "containers.index").stat().st_mtime))
+        return XboxSaveStore.latest_in(self._saves_folder)
 
     def _require_xbox_store(self) -> XboxSaveStore:
         store = self._xbox_store()
@@ -183,10 +193,13 @@ class DragonwildsAdapter(GameAdapter):
 
     # -- reading/writing one world, in either form --
 
+    def _slot(self, save_name: str | None) -> str:
+        return slot_name(save_name) if save_name else self.default_save_name
+
     def _read_world(self, save_name: str | None = None) -> dict[str, bytes]:
         """{".sav": bytes, ".sav.backup": bytes} as stored on disk (either
         form), only the ones that exist."""
-        name = save_name or self.default_save_name
+        name = self._slot(save_name)
         found = {}
         if self._uses_xbox_store:
             store = self._xbox_store()
@@ -247,6 +260,7 @@ class DragonwildsAdapter(GameAdapter):
                       if f.is_file() and f.name.endswith(SAV_SUFFIX))
 
     def save_stat(self, save_name: str) -> tuple[datetime | None, int | None]:
+        save_name = self._slot(save_name)
         if self._uses_xbox_store:
             store = self._xbox_store()
             entries = [e for e in (store.entries() if store else [])
@@ -274,7 +288,7 @@ class DragonwildsAdapter(GameAdapter):
         return hasher.hexdigest()
 
     def backup_local_save(self, backup_dir: Path, save_name: str | None = None) -> None:
-        name = save_name or self.default_save_name
+        name = self._slot(save_name)
         files = self._read_world(name)
         if files:
             backup_dir.mkdir(exist_ok=True)
@@ -288,7 +302,7 @@ class DragonwildsAdapter(GameAdapter):
         """Flat "<World>.sav" (+ "<World>.sav.backup") in plain form -- the
         world name travels as the file name, which is also what the game
         requires it to be."""
-        name = save_name or self.default_save_name
+        name = self._slot(save_name)
         files = self._read_world(name)
         with zipfile.ZipFile(dest_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             for suffix, data in files.items():

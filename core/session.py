@@ -16,6 +16,7 @@ controllers don't each hit the coordinator and each race their own
 self-heal independently."""
 
 import logging
+import queue
 import threading
 import time
 from pathlib import Path
@@ -100,6 +101,10 @@ class SessionController:
         # the kind of save-corrupting risk the rest of this file exists to
         # avoid), so it has no effect after that point.
         self._stop_requested = threading.Event()
+
+        # Join codes the host pasted in (adapters with join_code_entry),
+        # handed from the GUI thread to Host Now's own thread.
+        self._submitted_codes: queue.Queue[str] = queue.Queue()
 
     def _resources_for(self, save_name: str | None) -> tuple:
         """Resolves (and lazily builds/caches) the (storage, local_record,
@@ -219,6 +224,51 @@ class SessionController:
         (bool, str) return -- this method itself has nothing to report."""
         self._stop_requested.set()
 
+    # How long a game with join_code_entry holds back the "started"
+    # notification waiting for the host to paste the code in, so the one
+    # Discord message can include it. After that it goes out without one.
+    JOIN_CODE_WAIT_SECONDS = 600
+
+    def submit_join_code(self, join_code: str) -> None:
+        """Called from the GUI when the host pastes in the game's join
+        code. Fire-and-forget, like stop_host: Host Now's own thread picks
+        it up and does the announcing."""
+        join_code = join_code.strip()
+        if join_code:
+            self._submitted_codes.put(join_code)
+
+    def _wait_for_submitted_code(self, timeout: float) -> str | None:
+        """The first code the host pastes in, or None if the game closes
+        or the timeout passes first."""
+        deadline = time.time() + timeout
+        while time.time() < deadline and self.adapter.is_running():
+            try:
+                return self._submitted_codes.get(timeout=2)
+            except queue.Empty:
+                continue
+        return None
+
+    def _announce_join_code(self, join_code: str, update_status_text=None) -> None:
+        self.coordinator.announce_join_code(join_code)
+        log.info("Shared join code '%s' with the group.", join_code)
+        if update_status_text:
+            update_status_text(f"Hosting as '{self.player_name}' — join code: {join_code}")
+
+    def _wait_for_exit_accepting_codes(self, update_status_text=None) -> None:
+        """adapter.wait_for_exit, except a code pasted in later (after the
+        wait above gave up, or a new one after a restart of the world)
+        still reaches everyone's status line -- just without another
+        Discord message."""
+        while self.adapter.is_running():
+            try:
+                code = self._submitted_codes.get(timeout=5)
+            except queue.Empty:
+                continue
+            try:
+                self._announce_join_code(code, update_status_text)
+            except requests.RequestException as e:
+                log.warning("Could not share join code: %s", e)
+
     def _wait_for_launch_or_stop(self, timeout: float) -> str:
         """Polls for either the game starting or a stop request, instead
         of adapter.wait_for_start's own polling loop, so Stop Host has
@@ -283,6 +333,8 @@ class SessionController:
         current = result["current"]
         self._host_now_pending = True
         self._stop_requested.clear()  # fresh for this attempt -- ignore any stale flag from a previous one
+        while not self._submitted_codes.empty():  # likewise any code pasted in during a previous session
+            self._submitted_codes.get_nowait()
 
         # CRITICAL: everything from here on is wrapped in try/finally. If
         # ANYTHING goes wrong we MUST still release the host claim in the
@@ -325,14 +377,20 @@ class SessionController:
             if update_status_text:
                 update_status_text(f"You're hosting as '{self.player_name}' — playing now.")
 
-            log.info("Watching for a join code to share...")
-            join_code = self.adapter.scrape_join_code()
+            if self.adapter.join_code_entry:
+                log.info("Waiting for you to paste in the join code from the game...")
+                if update_status_text:
+                    update_status_text(
+                        f"You're hosting as '{self.player_name}' — paste the join code from the game "
+                        "below to share it."
+                    )
+                join_code = self._wait_for_submitted_code(self.JOIN_CODE_WAIT_SECONDS)
+            else:
+                log.info("Watching for a join code to share...")
+                join_code = self.adapter.scrape_join_code()
 
             if join_code:
-                self.coordinator.announce_join_code(join_code)
-                log.info("Shared join code '%s' with the group.", join_code)
-                if update_status_text:
-                    update_status_text(f"Hosting as '{self.player_name}' — join code: {join_code}")
+                self._announce_join_code(join_code, update_status_text)
             else:
                 log.info(
                     "No join code was found before the session ended (or this "
@@ -341,7 +399,10 @@ class SessionController:
 
             self.notifier.notify(self.adapter.game_id, self.player_name, join_code, event="started")
 
-            self.adapter.wait_for_exit()
+            if self.adapter.join_code_entry:
+                self._wait_for_exit_accepting_codes(update_status_text)
+            else:
+                self.adapter.wait_for_exit()
             log.info("%s has closed.", self.adapter.display_name)
 
             if not self.adapter.has_local_save(save_name=name):

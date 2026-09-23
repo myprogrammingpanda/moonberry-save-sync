@@ -158,6 +158,12 @@ class GameAdapter(ABC):
 
     # -- optional: not every game exposes a join-code-style concept --
 
+    # True for a game that shows the host a join/invite code in-game but
+    # leaves no trace of it anywhere readable (no log line): the host is
+    # offered a box to paste it into while hosting, instead of
+    # scrape_join_code being called.
+    join_code_entry: bool = False
+
     def scrape_join_code(self) -> str | None:
         return None
 
