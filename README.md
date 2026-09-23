@@ -27,14 +27,18 @@ without changing how it works today.
    (not something you make up yourself). Fill them in and hit Save.
    That's it — you won't need to do this again.
 
-   **Which edition of the game do you have?** Valheim works with both
-   the **Steam** and the **Xbox app / Game Pass (PC)** editions — pick
-   yours from the **Edition** dropdown in the game's settings (or click
-   **Detect**), and the launch/save settings fill in to match. Saves are
-   the same format on both, so Steam and Game Pass players can share one
-   world. Game Pass players: in Valheim, open **Manage Saves** and use
-   **Move to Local** on the world first — worlds left in Xbox cloud
-   storage can't be synced.
+   **Which edition of the game do you have?** Valheim has an **Edition**
+   dropdown in its settings: **Steam** (the default) or **Xbox app /
+   Game Pass (PC)**. Pick yours (or click **Detect**) and the launch/save
+   settings fill in to match. Both editions use the same save format, so
+   Steam and Game Pass players can share one world.
+
+   Game Pass (PC) support is **new and not yet tested** on a real Game
+   Pass install — it's based on research, so if something's off (the
+   game doesn't launch, or the join code never shows up), tell whoever
+   runs the group. Game Pass players: in Valheim, open **Manage Saves**
+   and use **Move to Local** on the world first — worlds left in Xbox
+   cloud storage can't be synced.
 
    **Setting this up for a new friend group?** See [`SETUP.md`](SETUP.md)
    for deploying your own coordinator and storage — only one person per

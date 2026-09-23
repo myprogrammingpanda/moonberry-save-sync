@@ -36,8 +36,11 @@ STORE_PACKAGE_FAMILY = "CoffeeStainStudios.Valheim_496a1srhmar9w"
 # folder in the same on-disk format (Iron Gate: "There's no difference
 # between the versions"), and both run as valheim.exe -- so the only
 # per-edition default that actually differs is how to launch the game.
-# The Game Pass Player.log location is from research, not yet confirmed
-# on a real Game Pass install.
+# None of the Game Pass defaults (Player.log location, launch URI,
+# Move-to-Local landing in worlds_local) have been confirmed on a real
+# Game Pass install yet -- they're from research. If a Game Pass player
+# reports no join code showing, check where the title screen's "Show
+# Player.log" button actually opens first.
 _VALHEIM_DATA = r"%userprofile%\AppData\LocalLow\IronGate\Valheim"
 _SHARED_DEFAULTS = {
     "valheim_worlds_folder": rf"{_VALHEIM_DATA}\worlds_local",
