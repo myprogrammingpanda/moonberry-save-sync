@@ -14,7 +14,8 @@ from pathlib import Path
 
 import psutil
 
-from core.game_base import GameAdapter
+from core.game_base import GameAdapter, GameEdition
+from core.platform_detect import steam_app_installed, store_package_installed
 
 log = logging.getLogger("moonberry-sync")
 
@@ -25,6 +26,24 @@ JOIN_CODE_PATTERN = re.compile(r"with join code (\w{4,8}) is active", re.IGNOREC
 # the wrong (superseded) code -- confirmed as a real mismatch with a more
 # permissive pattern.
 
+STEAM_APP_ID = 892970
+# Microsoft Store / Game Pass package family name -- also the prefix of the
+# official shell:appsFolder launch command (valheim.com's "How to enable
+# developer mode" support page).
+STORE_PACKAGE_FAMILY = "CoffeeStainStudios.Valheim_496a1srhmar9w"
+
+# Both editions keep local worlds and Player.log in the same LocalLow
+# folder in the same on-disk format (Iron Gate: "There's no difference
+# between the versions"), and both run as valheim.exe -- so the only
+# per-edition default that actually differs is how to launch the game.
+# The Game Pass Player.log location is from research, not yet confirmed
+# on a real Game Pass install.
+_VALHEIM_DATA = r"%userprofile%\AppData\LocalLow\IronGate\Valheim"
+_SHARED_DEFAULTS = {
+    "valheim_worlds_folder": rf"{_VALHEIM_DATA}\worlds_local",
+    "valheim_log_path": rf"{_VALHEIM_DATA}\Player.log",
+}
+
 
 class ValheimAdapter(GameAdapter):
     game_id = "valheim"
@@ -34,8 +53,33 @@ class ValheimAdapter(GameAdapter):
         ("valheim_worlds_folder", "Worlds folder", "folder"),
         ("valheim_world_name", "World name", "text"),
         ("valheim_log_path", "Player.log path", "file"),
-        ("valheim_launch_uri", "Launch URI (Steam)", "text"),
+        ("valheim_launch_uri", "Launch URI", "text"),
     ]
+
+    editions = {
+        "steam": GameEdition(
+            label="Steam",
+            defaults={**_SHARED_DEFAULTS, "valheim_launch_uri": f"steam://rungameid/{STEAM_APP_ID}"},
+        ),
+        "gamepass": GameEdition(
+            label="Xbox app / Game Pass (PC)",
+            defaults={**_SHARED_DEFAULTS, "valheim_launch_uri": rf"shell:appsFolder\{STORE_PACKAGE_FAMILY}!Game"},
+            hint=(
+                "Worlds kept in Xbox cloud storage can't be synced. In Valheim, "
+                "open Manage Saves and use \"Move to Local\" on each world you "
+                "want to sync first."
+            ),
+        ),
+    }
+
+    @classmethod
+    def detect_editions(cls) -> list[str]:
+        found = []
+        if steam_app_installed(STEAM_APP_ID):
+            found.append("steam")
+        if store_package_installed(STORE_PACKAGE_FAMILY):
+            found.append("gamepass")
+        return found
 
     @property
     def default_save_name(self) -> str:

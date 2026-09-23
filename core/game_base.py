@@ -9,8 +9,27 @@ games/_discovery.py finds it automatically -- no other file needs to change.
 import re
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+# The config.json["games"][game_id] key holding which edition is installed
+# on this machine -- game-agnostic, so it isn't prefixed with a game id the
+# way each game's own config_fields keys are.
+EDITION_KEY = "edition"
+
+
+@dataclass(frozen=True)
+class GameEdition:
+    """One way a game can be installed on a desktop PC (Steam, Game Pass,
+    ...). Purely a settings-UI preset: picking an edition fills in
+    `defaults` for this game's config_fields, and the adapter itself only
+    ever reads those explicit config values at runtime -- never the
+    edition id -- so there's no hidden per-edition fallback anywhere a
+    wrong guess could silently point sync at the wrong folder."""
+    label: str                                    # e.g. "Steam", shown in the dropdown
+    defaults: dict[str, str] = field(default_factory=dict)  # config key -> preset value
+    hint: str = ""                                # one-off setup note shown under the dropdown
 
 
 def sanitize_key_component(value: str) -> str:
@@ -36,10 +55,35 @@ class GameAdapter(ABC):
     # "text", "folder", "file" (the latter two get a Browse... button).
     config_fields: list[tuple[str, str, str]] = []
 
+    # Every desktop edition this game supports, keyed by a stable id stored
+    # under EDITION_KEY. The first entry is the default -- and must match
+    # what the adapter has always assumed, so configs saved before editions
+    # existed (no EDITION_KEY at all) keep meaning exactly what they did.
+    # Leave empty for a game with only one edition: no dropdown is shown.
+    editions: dict[str, GameEdition] = {}
+
     def __init__(self, game_config: dict):
         """`game_config` is this game's own sub-section of config.json,
         i.e. config["games"][self.game_id]."""
         self.cfg = game_config
+
+    @classmethod
+    def edition_for(cls, game_config: dict) -> str | None:
+        """The edition id a given config section is set to, falling back to
+        the default (first) edition if it's missing or unrecognised. None
+        for a game that declares no editions."""
+        if not cls.editions:
+            return None
+        chosen = game_config.get(EDITION_KEY)
+        return chosen if chosen in cls.editions else next(iter(cls.editions))
+
+    @classmethod
+    def detect_editions(cls) -> list[str]:
+        """Which of `editions` look installed on this machine right now, in
+        `editions` order. Only ever used to *suggest* a choice in the
+        settings UI -- someone can have more than one edition installed, so
+        this can't decide on its own. Default: can't tell."""
+        return []
 
     @property
     @abstractmethod

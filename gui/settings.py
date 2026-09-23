@@ -2,7 +2,7 @@
 through a GUI instead of hand-editing JSON. Shown automatically on first run
 (no config.json yet), and reachable afterward from the main window's File >
 Settings. Purely a form over config.json's shape; knows nothing about any
-specific game beyond what GameAdapter.config_fields declares."""
+specific game beyond what GameAdapter.config_fields/editions declare."""
 
 import json
 import sys
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.theme import apply_theme, resolve_theme, set_titlebar_theme
+from gui.widgets.game_config_form import GameConfigForm
 
 # (key, label, required, secret)
 _TOP_LEVEL_FIELDS = [
@@ -203,26 +204,7 @@ class SettingsDialog(QDialog):
             return
 
         existing_game_cfg = self.existing_cfg.get("games", {}).get(game_id, {})
-        for key, label, kind in adapter_cls.config_fields:
-            entry_key = f"games.{game_id}.{key}"
-            entry = QLineEdit(str(existing_game_cfg.get(key, "")))
-            self.entries[entry_key] = entry
-
-            if kind == "text":
-                self.game_group_layout.addRow(f"{label} *", entry)
-                continue
-
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.addWidget(entry)
-            browse = QPushButton("Browse...")
-            if kind == "folder":
-                browse.clicked.connect(lambda _checked=False, e=entry: self._browse_folder(e))
-            else:
-                browse.clicked.connect(lambda _checked=False, e=entry: self._browse_file(e))
-            row_layout.addWidget(browse)
-            self.game_group_layout.addRow(f"{label} *", row)
+        self.game_form = GameConfigForm(self, self.game_group_layout, adapter_cls, existing_game_cfg)
 
     def _toggle_secret_visibility(self, checked: bool):
         mode = QLineEdit.Normal if checked else QLineEdit.Password
@@ -246,9 +228,7 @@ class SettingsDialog(QDialog):
         for key, label, required, _secret in _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS:
             if required and not self.entries[key].text().strip():
                 missing.append(label)
-        for key, label, _kind in adapter_cls.config_fields:
-            if not self.entries[f"games.{game_id}.{key}"].text().strip():
-                missing.append(label)
+        missing += self.game_form.missing_labels()
 
         if missing:
             QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(missing))
@@ -274,8 +254,7 @@ class SettingsDialog(QDialog):
 
         games_cfg = dict(cfg.get("games", {}))
         game_section = dict(games_cfg.get(game_id, {}))
-        for key, _label, _kind in adapter_cls.config_fields:
-            game_section[key] = self.entries[f"games.{game_id}.{key}"].text().strip()
+        self.game_form.apply_to(game_section)
         games_cfg[game_id] = game_section
         cfg["games"] = games_cfg
 

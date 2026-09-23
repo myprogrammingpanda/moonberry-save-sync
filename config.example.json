@@ -21,6 +21,7 @@
 
   "games": {
     "valheim": {
+      "edition": "steam",
       "valheim_worlds_folder": "%userprofile%\\AppData\\LocalLow\\IronGate\\Valheim\\worlds_local",
       "valheim_world_name": "YourWorldName",
       "valheim_log_path": "%userprofile%\\AppData\\LocalLow\\IronGate\\Valheim\\Player.log",

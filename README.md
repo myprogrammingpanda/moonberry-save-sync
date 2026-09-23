@@ -27,6 +27,15 @@ without changing how it works today.
    (not something you make up yourself). Fill them in and hit Save.
    That's it — you won't need to do this again.
 
+   **Which edition of the game do you have?** Valheim works with both
+   the **Steam** and the **Xbox app / Game Pass (PC)** editions — pick
+   yours from the **Edition** dropdown in the game's settings (or click
+   **Detect**), and the launch/save settings fill in to match. Saves are
+   the same format on both, so Steam and Game Pass players can share one
+   world. Game Pass players: in Valheim, open **Manage Saves** and use
+   **Move to Local** on the world first — worlds left in Xbox cloud
+   storage can't be synced.
+
    **Setting this up for a new friend group?** See [`SETUP.md`](SETUP.md)
    for deploying your own coordinator and storage — only one person per
    group needs to do this, once.
@@ -46,6 +55,10 @@ without changing how it works today.
   Click **Host Now before Play Now** if you want your save synced before
   you play — once the game's open, syncing can no longer happen for that
   session.
+- **Playing with friends on Xbox/PlayStation/Switch (Valheim)**: tick
+  **Crossplay** when you start the world in-game. Console players can
+  then join with the join code shown in the status line — they just
+  can't host, since consoles can't run this app.
 - **Manual Sync** (for when you played outside the app, e.g. solo):
   - **Force Upload Current Save** — uploads whatever's currently in your
     save folder as a new version. Fails cleanly if someone's actively

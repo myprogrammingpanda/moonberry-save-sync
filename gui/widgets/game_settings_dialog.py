@@ -10,15 +10,14 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QDialog,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
+
+from gui.widgets.game_config_form import GameConfigForm
 
 
 class GameSettingsDialog(QDialog):
@@ -28,7 +27,6 @@ class GameSettingsDialog(QDialog):
         self.game_id = game_id
         self.adapter_cls = adapter_cls
         self.saved = False
-        self.entries: dict[str, QLineEdit] = {}
 
         try:
             self.existing_cfg = json.loads(config_path.read_text(encoding="utf-8"))
@@ -43,25 +41,7 @@ class GameSettingsDialog(QDialog):
         layout.addLayout(form)
 
         existing_game_cfg = self.existing_cfg.get("games", {}).get(game_id, {})
-        for key, label, kind in adapter_cls.config_fields:
-            entry = QLineEdit(str(existing_game_cfg.get(key, "")))
-            self.entries[key] = entry
-
-            if kind == "text":
-                form.addRow(f"{label} *", entry)
-                continue
-
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.addWidget(entry)
-            browse = QPushButton("Browse...")
-            if kind == "folder":
-                browse.clicked.connect(lambda _checked=False, e=entry: self._browse_folder(e))
-            else:
-                browse.clicked.connect(lambda _checked=False, e=entry: self._browse_file(e))
-            row_layout.addWidget(browse)
-            form.addRow(f"{label} *", row)
+        self.game_form = GameConfigForm(self, form, adapter_cls, existing_game_cfg)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -74,19 +54,8 @@ class GameSettingsDialog(QDialog):
         button_row.addWidget(save_button)
         layout.addLayout(button_row)
 
-    def _browse_folder(self, entry: QLineEdit):
-        chosen = QFileDialog.getExistingDirectory(self, "Select folder", entry.text() or "")
-        if chosen:
-            entry.setText(chosen)
-
-    def _browse_file(self, entry: QLineEdit):
-        start_dir = str(Path(entry.text()).parent) if entry.text() else ""
-        chosen, _filter = QFileDialog.getOpenFileName(self, "Select file", start_dir)
-        if chosen:
-            entry.setText(chosen)
-
     def _on_save(self):
-        missing = [label for key, label, _kind in self.adapter_cls.config_fields if not self.entries[key].text().strip()]
+        missing = self.game_form.missing_labels()
         if missing:
             QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(missing))
             return
@@ -94,8 +63,7 @@ class GameSettingsDialog(QDialog):
         cfg = dict(self.existing_cfg)  # preserve every unrelated key as-is
         games_cfg = dict(cfg.get("games", {}))
         game_section = dict(games_cfg.get(self.game_id, {}))
-        for key, _label, _kind in self.adapter_cls.config_fields:
-            game_section[key] = self.entries[key].text().strip()
+        self.game_form.apply_to(game_section)
         games_cfg[self.game_id] = game_section
         cfg["games"] = games_cfg
 
