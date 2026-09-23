@@ -179,6 +179,13 @@ class MainWindow(QMainWindow):
         log_layout.addWidget(self.log_view)
         layout.addWidget(log_group, stretch=1)
 
+        # Which build this is, at a glance -- handy when a friend's client
+        # misbehaves and the first question is "which version are you on?"
+        self.version_label = QLabel(f"v{self.app_version}")
+        self.version_label.setProperty("role", "dim")
+        self.version_label.setAlignment(Qt.AlignRight)
+        layout.addWidget(self.version_label)
+
         self.setCentralWidget(central)
 
         self._select_game(self.active_game_id)
