@@ -2,7 +2,10 @@
 renames existing save objects in the bucket from an old save_key_prefix to
 whatever each adapter's CURRENT save_key_prefix computes to, and updates
 the coordinator's per-game save_keys record to point at the renamed
-"latest" key -- so nothing has to redundantly re-download afterward.
+"latest" key. This machine's local version record is renamed along with
+them only if it already named one of the renamed objects, so a machine
+that has that version doesn't redundantly re-download it, while one that
+doesn't (e.g. the objects were a friend's uploads) still downloads.
 
 Usage (run from the repo root, with config.json filled in):
     python scripts/migrate_save_key_prefix.py            # dry run -- lists what WOULD happen, changes nothing
@@ -74,6 +77,28 @@ def migrate_game(game_id: str, adapter, cfg: dict, coordinator: Coordinator, app
     for old_key, new_key in renames:
         print(f"    {old_key}  ->  {new_key}")
 
+    # This machine's record of which cloud version it already has locally.
+    # Only follow it through the rename if it currently names one of the
+    # objects being renamed -- i.e. this machine really does have that
+    # version on disk. Unconditionally setting it to the latest renamed key
+    # was a real trap: when the old-prefix objects were uploaded by someone
+    # ELSE (a friend still on a pre-rename client), it told this machine it
+    # already had their newer save, so Host Now skipped the download and
+    # this machine's older local world got uploaded over theirs on exit.
+    local_record_path = STATE_DIR / f"local_version_{game_id}.txt"
+    try:
+        local_key = local_record_path.read_text().strip()
+    except OSError:
+        local_key = None
+    renamed_local_key = dict(renames).get(local_key)
+    if renamed_local_key:
+        print(f"[{game_id}] local_version_{game_id}.txt: '{local_key}' -> '{renamed_local_key}' (this machine has that version).")
+    else:
+        print(
+            f"[{game_id}] local_version_{game_id}.txt: left as '{local_key}' -- this machine doesn't have any of "
+            f"the renamed versions, so it will download the latest next time it syncs."
+        )
+
     if not apply:
         print(f"[{game_id}] dry run only -- pass --apply to actually rename these and update the coordinator.\n")
         return
@@ -98,10 +123,11 @@ def migrate_game(game_id: str, adapter, cfg: dict, coordinator: Coordinator, app
     coordinator.release_host(save_key=latest_new_key)
     print(f"[{game_id}] coordinator's save_keys['{game_id}'] updated to '{latest_new_key}'.")
 
-    STATE_DIR.mkdir(exist_ok=True)
-    local_record_path = STATE_DIR / f"local_version_{game_id}.txt"
-    local_record_path.write_text(latest_new_key)
-    print(f"[{game_id}] local_version_{game_id}.txt updated to '{latest_new_key}' (avoids a redundant re-download).\n")
+    if renamed_local_key:
+        local_record_path.write_text(renamed_local_key)
+        print(f"[{game_id}] local_version_{game_id}.txt updated to '{renamed_local_key}'.\n")
+    else:
+        print(f"[{game_id}] local_version_{game_id}.txt left unchanged.\n")
 
 
 def main():
