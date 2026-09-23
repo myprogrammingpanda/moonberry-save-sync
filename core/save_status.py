@@ -41,6 +41,31 @@ def resolve_slot_display_name(status: dict, game_id: str, slot_id: str) -> str |
     return names.get(slot_id) if isinstance(names, dict) else None
 
 
+def cloud_key_uploaded_at(cloud_key: str | None, own_prefix: str) -> datetime | None:
+    """Cloud save keys are minted as f"{prefix}{int(time.time())}.zip"
+    (see SaveStorage.new_save_key) -- the upload time is embedded right
+    in the key, so no extra coordinator/storage call is needed to know
+    roughly when a save's cloud copy was last updated. Used purely as an
+    advisory hint (e.g. in Sync's confirmation dialog) so you can compare
+    it against your local save's own modified time before deciding to
+    overwrite -- never to auto-decide anything: file mtimes and upload
+    times are both weak proxies for actual game progress (a mtime can be
+    touched by unrelated tools, an upload can happen after barely
+    playing), and with a save multiple people touch, "which is newer"
+    isn't even guaranteed to mean "which has more progress" if the two
+    genuinely diverged. Returns None if the key doesn't look like one of
+    ours or doesn't parse."""
+    if not cloud_key or not cloud_key.startswith(own_prefix) or not cloud_key.endswith(".zip"):
+        return None
+    timestamp_str = cloud_key[len(own_prefix) : -len(".zip")]
+    if not timestamp_str.isdigit():
+        return None
+    try:
+        return datetime.fromtimestamp(int(timestamp_str))
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 @dataclass
 class SaveRow:
     save_name: str
@@ -49,6 +74,7 @@ class SaveRow:
     local_modified: datetime | None
     local_size_bytes: int | None
     cloud_key: str | None
+    cloud_modified: datetime | None
     owner: str | None
     status: str  # "in_sync" | "cloud_has_changes" | "local_only" | "cloud_only"
 
@@ -73,6 +99,7 @@ def compute_save_rows(controller, status: dict) -> list["SaveRow"]:
         _, local_record, _, _ = controller._resources_for(save_name)
         tracked_key = local_record.read()
         modified, size = adapter.save_stat(save_name)
+        cloud_modified = cloud_key_uploaded_at(cloud_key, own_prefix)
 
         if not cloud_key:
             row_status = "local_only"
@@ -81,13 +108,15 @@ def compute_save_rows(controller, status: dict) -> list["SaveRow"]:
         else:
             row_status = "cloud_has_changes"
 
-        rows[slot_id] = SaveRow(save_name, slot_id, True, modified, size, cloud_key, owner, row_status)
+        rows[slot_id] = SaveRow(save_name, slot_id, True, modified, size, cloud_key, cloud_modified, owner, row_status)
 
     for slot_id, cloud_key in cloud_slots.items():
         if slot_id in rows or not cloud_key:
             continue
         display_name = resolve_slot_display_name(status, game_id, slot_id) or slot_id
         owner = resolve_slot_owner(status, game_id, slot_id)
-        rows[slot_id] = SaveRow(display_name, slot_id, False, None, None, cloud_key, owner, "cloud_only")
+        own_prefix = adapter.save_key_prefix_for(display_name)
+        cloud_modified = cloud_key_uploaded_at(cloud_key, own_prefix)
+        rows[slot_id] = SaveRow(display_name, slot_id, False, None, None, cloud_key, cloud_modified, owner, "cloud_only")
 
     return sorted(rows.values(), key=lambda r: r.save_name.lower())

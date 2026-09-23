@@ -45,10 +45,19 @@ class GameDetailPanel(QWidget):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
+        # None while idle/using the configured default save; set for the
+        # span of a Host Now session that was started by "slotting in" a
+        # non-default save from the Saves tab (see _start_hosting_save) --
+        # lets Overview's already-complete Play Now/Stop Host flow work
+        # for ANY save, not just the configured default, without
+        # duplicating that flow inside the Saves tab itself.
+        self._active_save_name: str | None = None
+
         self.tabs = QTabWidget()
         outer_layout.addWidget(self.tabs)
 
-        overview_tab = QWidget()
+        self.overview_tab = QWidget()
+        overview_tab = self.overview_tab
         layout = QVBoxLayout(overview_tab)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
@@ -119,6 +128,9 @@ class GameDetailPanel(QWidget):
         self.game_started.connect(self._on_game_started)
         self.sync_row.busy_changed.connect(self._set_busy)
         self.save_table.busy_changed.connect(self._set_busy)
+        self.save_table.host_requested.connect(self._start_hosting_save)
+
+        self._set_active_save(None)  # show the configured default save's name from the start
 
     def _on_tab_changed(self, index: int) -> None:
         if self.tabs.widget(index) is self.save_table:
@@ -136,6 +148,31 @@ class GameDetailPanel(QWidget):
         self.play_button.setEnabled(not busy)
         self.sync_row.set_enabled(not busy)
         self.save_table.set_rows_enabled(not busy)
+
+    def _set_active_save(self, save_name: str | None) -> None:
+        """None means "use the configured default save" -- the ordinary,
+        always-worked case. Non-None means Overview's actions (Host Now,
+        and Force Upload/Download via GameSyncRow) are scoped to that
+        specific save instead, for the span of a Saves-tab-initiated Host
+        session. Always reflected in the title, so it's never ambiguous
+        which save Overview's buttons currently act on -- not just while
+        a non-default save is slotted in."""
+        self._active_save_name = save_name
+        self.sync_row.set_active_save(save_name)
+        effective_name = save_name or self.controller.adapter.default_save_name
+        self.title_label.setText(f"{self.controller.adapter.display_name} — {effective_name}")
+
+    def _start_hosting_save(self, save_name: str) -> None:
+        """Entry point for the Saves tab's Host button: "slots in" the
+        chosen save as Overview's active target and switches to it, then
+        runs the exact same Host Now flow a manual click on Overview's own
+        Host Now button would -- rather than duplicating that flow (claim/
+        sync/wait-for-you-to-play/watch/upload/release, plus its Play Now
+        and Stop Host integration) separately inside the Saves tab, where
+        it would have no way to actually let you launch the game."""
+        self._set_active_save(save_name)
+        self.tabs.setCurrentWidget(self.overview_tab)
+        self._on_host_now()
 
     # -- per-game settings --
 
@@ -161,9 +198,11 @@ class GameDetailPanel(QWidget):
     def _on_host_now(self):
         self._set_busy(True)
         self.status_label.setText("Claiming host...")
+        save_name = self._active_save_name
 
         def worker():
             success, msg = self.controller.host_now(
+                save_name=save_name,
                 update_status_text=lambda text: self.status_label.setText(text),
                 on_ready_for_launch=self.ready_for_launch.emit,
                 on_game_started=self.game_started.emit,
@@ -190,6 +229,8 @@ class GameDetailPanel(QWidget):
         self._set_busy(False)
         self.stop_host_button.setEnabled(False)
         self.host_stack.setCurrentWidget(self.host_button)
+        self._set_active_save(None)  # back to the configured default for next time
+        self.save_table.refresh_local_scan()
         if success:
             QMessageBox.information(self, "Host Now", msg)
         else:

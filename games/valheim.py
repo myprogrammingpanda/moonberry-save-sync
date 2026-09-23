@@ -92,16 +92,27 @@ class ValheimAdapter(GameAdapter):
             return target.is_dir()
         return all(f.exists() for f in target)
 
+    # Valheim's own automatic/manual backup feature creates sibling
+    # folders in worlds_local named "<world>_backup_YYYYMMDD-HHMMSS" or
+    # "<world>_backup_auto-YYYYMMDD-HHMMSS" -- confirmed present on a real
+    # worlds_local folder during testing. These are Valheim's own
+    # disposable snapshots, not a real selectable save (same category of
+    # trap as Zomboid's "<name>_player" client-side cache sibling), so
+    # list_local_saves must exclude them rather than surfacing "saves"
+    # that are really just backup copies of another entry in the list.
+    _BACKUP_SUFFIX_PATTERN = re.compile(r"_backup_(auto-)?\d{8}-\d{6}$")
+
     def list_local_saves(self) -> list[str]:
         """Every world name found in valheim_worlds_folder, whichever
         format (1.0+ folder or legacy flat-file pair) it's actually stored
-        in. Doesn't filter anything out -- Valheim doesn't leave stray
-        non-world siblings in this folder the way Zomboid does."""
+        in, excluding Valheim's own backup-snapshot siblings."""
         folder = Path(self.cfg["valheim_worlds_folder"])
         if not folder.is_dir():
             return []
         names = set()
         for entry in folder.iterdir():
+            if self._BACKUP_SUFFIX_PATTERN.search(entry.stem if entry.is_file() else entry.name):
+                continue
             if entry.is_dir():
                 names.add(entry.name)  # 1.0+ folder format
             elif entry.suffix == ".fwl":

@@ -82,7 +82,15 @@ class MainWindow(QMainWindow):
         self.panels: dict[str, GameDetailPanel] = {}
 
         self.setWindowTitle("Moonberry Save-Sync")
-        self.resize(760, 560)
+        # Wide enough that the Saves tab's table (Save Name/Modified/Owner/
+        # Size/Status/Actions) fits without a horizontal scrollbar for a
+        # typical save list -- measured against this app's own real save
+        # data, the sidebar (200px) and layout margins, plus some slack for
+        # font/DPI differences across machines. Still just a starting size,
+        # not a floor -- setMinimumSize below is unchanged, so it's freely
+        # resizable smaller (where the table falls back to its own
+        # horizontal scrollbar, same as any other data table would).
+        self.resize(960, 560)
         self.setMinimumSize(600, 420)
 
         self.theme_name = resolve_theme(self._read_theme_pref())

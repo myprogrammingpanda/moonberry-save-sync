@@ -1,11 +1,15 @@
 """Saves tab: one row per save-slot this game has -- every local save
 found on disk, plus any save the coordinator knows about that hasn't been
-pulled to this machine yet -- each with its own Host / Sync actions.
-Mirrors GameSyncRow's background-thread-plus-signal pattern per action,
-but keyed by save name instead of by game, and reuses the SAME
-SessionController methods (host_now / force_download_latest) the Overview
-tab's Host Now / Force Download already call -- just with save_name set to
-this row's save instead of left at the configured default."""
+pulled to this machine yet -- each with its own Host / Sync action.
+
+Sync is self-contained here (pull-only, no waiting on you to play, so
+there's nothing for it to hand off). Host is NOT run directly from a row:
+Host Now's full flow (claim/sync/wait-for-you-to-start-the-game/watch/
+upload/release) is already built on the Overview tab, complete with Play
+Now and Stop Host integration a row here has no way to reproduce -- so a
+row's Host button just asks GameDetailPanel to "slot in" that save as
+Overview's active target and switch to it, then runs Overview's own,
+already-complete Host Now (see GameDetailPanel._start_hosting_save)."""
 
 import logging
 import threading
@@ -33,8 +37,18 @@ COLUMNS = ["Save Name", "Modified", "Owner", "Size", "Status", "Actions"]
 STATUS_LABELS = {
     "in_sync": "In sync",
     "cloud_has_changes": "Cloud has changes",
-    "local_only": "Local only (never uploaded)",
-    "cloud_only": "Cloud only (not downloaded)",
+    "local_only": "Local only",
+    "cloud_only": "Cloud only",
+}
+
+# Longer explanations, as tooltips rather than in the cell text itself --
+# a couple of these ballooned the Status column wide enough to force a
+# horizontal scrollbar for even a short, ordinary save list.
+STATUS_TOOLTIPS = {
+    "in_sync": "Your local copy matches the latest version in the cloud.",
+    "cloud_has_changes": "The cloud has a version that differs from what's on disk here.",
+    "local_only": "Exists on disk here, but has never been uploaded.",
+    "cloud_only": "Known to the cloud, but not on this machine's disk yet.",
 }
 
 
@@ -54,24 +68,26 @@ def _format_modified(modified: datetime | None) -> str:
 
 
 class _SaveRowActions(QWidget):
-    """One row's Host + Sync buttons. Both go straight through the same
-    SessionController methods the Overview tab uses -- Host = host_now,
-    Sync = force_download_latest (pull-only, never claims the host lock,
-    only meaningful when this save actually has a cloud copy to pull)."""
+    """One row's Host + Sync buttons. Sync runs right here (pull-only,
+    no host claim, no waiting on you to play -- see SaveTableWidget's
+    docstring). Host doesn't run anything itself: it just asks
+    (via on_host_requested) to be slotted in as Overview's active save
+    and switched to, where the real Host Now flow already lives."""
 
-    def __init__(self, controller, row: SaveRow, finished_signal: Signal, on_busy_changed, parent=None):
+    def __init__(self, controller, row: SaveRow, finished_signal: Signal, on_busy_changed, on_host_requested, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.row = row
         self.finished_signal = finished_signal
         self.on_busy_changed = on_busy_changed
+        self.on_host_requested = on_host_requested
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 2, 0)
 
         self.host_button = QPushButton("Host")
         self.host_button.setToolTip(
-            "Claims the host slot for this save, syncs it, then waits for you to start the game."
+            "Switches to the Overview tab with this save slotted in, then starts Host Now for it."
         )
         self.host_button.clicked.connect(self._on_host)
         layout.addWidget(self.host_button)
@@ -92,35 +108,50 @@ class _SaveRowActions(QWidget):
         answer = QMessageBox.question(
             self.window(),
             "Host Save",
-            f"Claim the host slot for '{self.row.save_name}'? "
-            "This syncs it (downloading it first if you don't have it yet) "
-            "and then waits for you to start the game.",
+            f"Switch to Overview with '{self.row.save_name}' as the active save, and start Host Now for it? "
+            "It'll be synced (downloaded first if you don't have it yet), then you start the game from there.",
         )
         if answer != QMessageBox.Yes:
             return
-        self._start("host", self.controller.host_now)
+        self.on_host_requested(self.row.save_name)
 
     def _on_sync(self):
+        local_str = _format_modified(self.row.local_modified)
+        cloud_str = _format_modified(self.row.cloud_modified)
+        comparison = ""
+        if self.row.local_modified and self.row.cloud_modified:
+            if self.row.local_modified > self.row.cloud_modified:
+                comparison = (
+                    "\n\nYour local save looks NEWER than the cloud version -- syncing "
+                    "would overwrite it with the older cloud copy. (A file's modified time "
+                    "isn't a guarantee of more progress, so use this as a hint, not certainty.)"
+                )
+            else:
+                comparison = "\n\nThe cloud version looks newer than your local save."
+
         answer = QMessageBox.question(
             self.window(),
             "Sync Save",
-            f"Download the cloud version of '{self.row.save_name}'? "
-            "This only runs if it differs from what's on disk here. A backup of "
-            "your current local save (if any) will be kept. The host slot is not claimed.",
+            f"Download the cloud version of '{self.row.save_name}'?\n\n"
+            f"Local last modified: {local_str}\n"
+            f"Cloud last uploaded: {cloud_str}"
+            f"{comparison}\n\n"
+            "This only runs if the cloud version differs from what's on disk. A backup "
+            "of your current local save (if any) will be kept. The host slot is not claimed.",
         )
         if answer != QMessageBox.Yes:
             return
-        self._start("sync", self.controller.force_download_latest)
+        self._start_sync()
 
-    def _start(self, action: str, fn) -> None:
+    def _start_sync(self) -> None:
         self.set_enabled(False)
         self.on_busy_changed(True)
         save_name = self.row.save_name
         slot_id = self.row.slot_id
 
         def worker():
-            success, msg = fn(save_name=save_name)
-            self.finished_signal.emit(slot_id, action, success, msg)
+            success, msg = self.controller.force_download_latest(save_name=save_name)
+            self.finished_signal.emit(slot_id, "sync", success, msg)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -132,9 +163,14 @@ class SaveTableWidget(QWidget):
     # _sync_lock on the controller, so only one can genuinely run at a
     # time regardless of where it was started from.
     busy_changed = Signal(bool)
-    # slot_id, action ("host"/"sync"), success, message -- emitted from a
+    # slot_id, action ("sync"), success, message -- emitted from a
     # background thread, marshaled to the GUI thread by Qt.
     row_action_finished = Signal(str, str, bool, str)
+    # save_name -- emitted when a row's Host button is confirmed.
+    # GameDetailPanel handles it by slotting that save in as Overview's
+    # active target, switching to it, and starting Overview's own Host
+    # Now flow (see GameDetailPanel._start_hosting_save).
+    host_requested = Signal(str)
 
     def __init__(self, game_id: str, controller, parent=None):
         super().__init__(parent)
@@ -157,7 +193,18 @@ class SaveTableWidget(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        # Columns 1-4 are plain QTableWidgetItem text cells -- ResizeToContents
+        # works reliably for those, sizing each to its actual displayed text.
+        for col in (1, 2, 3, 4):
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        # Column 5 is NOT plain text -- it's a setCellWidget container (the
+        # Host/Sync buttons), and ResizeToContents doesn't reliably size
+        # itself off a container widget's real sizeHint (it collapsed to a
+        # near-zero-width column with the button labels clipped away). A
+        # fixed width sized for "Host"/"Sync" at this theme's default
+        # button padding is simpler and reliable.
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Fixed)
+        self.table.setColumnWidth(5, 190)
         layout.addWidget(self.table)
 
         self.row_action_finished.connect(self._on_row_action_finished)
@@ -192,16 +239,20 @@ class SaveTableWidget(QWidget):
             self.table.setItem(i, 1, QTableWidgetItem(_format_modified(row.local_modified)))
             self.table.setItem(i, 2, QTableWidgetItem(row.owner or "—"))
             self.table.setItem(i, 3, QTableWidgetItem(_format_size(row.local_size_bytes)))
-            self.table.setItem(i, 4, QTableWidgetItem(STATUS_LABELS.get(row.status, row.status)))
+            status_item = QTableWidgetItem(STATUS_LABELS.get(row.status, row.status))
+            status_item.setToolTip(STATUS_TOOLTIPS.get(row.status, ""))
+            self.table.setItem(i, 4, status_item)
 
-            actions = _SaveRowActions(self.controller, row, self.row_action_finished, self.busy_changed.emit)
+            actions = _SaveRowActions(
+                self.controller, row, self.row_action_finished, self.busy_changed.emit, self.host_requested.emit
+            )
             actions.set_enabled(self._rows_enabled)
             self.table.setCellWidget(i, 5, actions)
 
     def _on_row_action_finished(self, slot_id: str, action: str, success: bool, msg: str) -> None:
         self.busy_changed.emit(False)
         self.refresh_local_scan()
-        title = "Host Save" if action == "host" else "Sync Save"
+        title = "Sync Save"
         if success:
             QMessageBox.information(self.window(), title, msg)
         else:

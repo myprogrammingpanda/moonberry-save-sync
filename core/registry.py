@@ -20,10 +20,15 @@ def build_game_controllers(
     cfg: dict,
     adapters: dict[str, type],
     app_dir: Path,
+    state_dir: Path,
     coordinator: Coordinator,
     notifier: DiscordNotifier,
     player_name: str,
 ) -> dict[str, SessionController]:
+    """app_dir is the install root (where config.json lives -- some GUI
+    code reads controller.app_dir / "config.json" directly). state_dir is
+    where all of this app's own runtime files go instead (local save
+    version/hash records, backups, temp zips) -- see main.py's STATE_DIR."""
     controllers: dict[str, SessionController] = {}
 
     for game_id, game_cfg in cfg.get("games", {}).items():
@@ -34,11 +39,12 @@ def build_game_controllers(
         adapter = adapter_cls(game_cfg)
 
         storage = SaveStorage(cfg, key_prefix=adapter.save_key_prefix)
-        local_record = LocalSaveRecord(app_dir, adapter.game_id, adapter.save_key_prefix)
-        local_content_hash = LocalContentHash(app_dir, adapter.game_id)
+        local_record = LocalSaveRecord(state_dir, adapter.game_id, adapter.save_key_prefix)
+        local_content_hash = LocalContentHash(state_dir, adapter.game_id)
 
         controllers[game_id] = SessionController(
             app_dir=app_dir,
+            state_dir=state_dir,
             adapter=adapter,
             coordinator=coordinator,
             storage=storage,

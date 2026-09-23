@@ -28,7 +28,16 @@ APP_VERSION = "1.4.3"
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
-LOG_PATH = APP_DIR / "sync.log"
+
+# Everything this app writes at runtime (sync log, per-save version/hash
+# records, local save backups, temp zips, the remembered player name)
+# lives under here instead of littering the install root -- keeps
+# APP_DIR itself to just the code, config.json, and docs. Created before
+# logging is configured below, since LOG_PATH's FileHandler needs the
+# parent directory to already exist.
+STATE_DIR = APP_DIR / "state"
+STATE_DIR.mkdir(exist_ok=True)
+LOG_PATH = STATE_DIR / "sync.log"
 
 # Only these two stdlib-only lines run before logging exists -- everything
 # else (including anything that touches PySide6) is deferred into main(),
@@ -167,13 +176,13 @@ def main():
         )
         active_game = fallback
 
-    player_name = get_player_name(APP_DIR, cfg)
+    player_name = get_player_name(STATE_DIR, cfg)
 
     coordinator = Coordinator(cfg["worker_url"], cfg["worker_secret"], player_name)
     notifier = DiscordNotifier(cfg.get("moonberry_url"), cfg.get("moonberry_secret"))
     update_checker = UpdateChecker(cfg.get("github_repo"), APP_VERSION)
 
-    game_controllers = build_game_controllers(cfg, adapters, APP_DIR, coordinator, notifier, player_name)
+    game_controllers = build_game_controllers(cfg, adapters, APP_DIR, STATE_DIR, coordinator, notifier, player_name)
 
     App(
         game_controllers,

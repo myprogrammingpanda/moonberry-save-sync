@@ -32,6 +32,7 @@ class SessionController:
     def __init__(
         self,
         app_dir: Path,
+        state_dir: Path,
         adapter,
         coordinator,
         storage,
@@ -42,7 +43,15 @@ class SessionController:
         cfg: dict,
         max_saved_versions: int = 5,
     ):
+        # app_dir is the install root -- kept only because the GUI reads
+        # controller.app_dir / "config.json" directly (see
+        # GameDetailPanel._open_game_settings). Everything THIS class
+        # itself writes (backups, temp zips, and -- via _resources_for --
+        # local version/hash records for non-default slots) goes under
+        # state_dir instead, so runtime files never land in the install
+        # root.
         self.app_dir = app_dir
+        self.state_dir = state_dir
         self.adapter = adapter
         self.coordinator = coordinator
         self.storage = storage
@@ -109,8 +118,8 @@ class SessionController:
             # pre-multi-save filenames (see core/storage.py) -- but the
             # default slot is always already seeded in __init__, so this
             # branch only ever runs for a genuinely non-default slot.
-            local_record = LocalSaveRecord(self.app_dir, self.adapter.game_id, prefix, slot_id=slot_id)
-            local_content_hash = LocalContentHash(self.app_dir, self.adapter.game_id, slot_id=slot_id)
+            local_record = LocalSaveRecord(self.state_dir, self.adapter.game_id, prefix, slot_id=slot_id)
+            local_content_hash = LocalContentHash(self.state_dir, self.adapter.game_id, slot_id=slot_id)
             self._slot_resources[slot_id] = (storage, local_record, local_content_hash, name)
         return self._slot_resources[slot_id]
 
@@ -170,8 +179,8 @@ class SessionController:
                 effective_cloud_key,
                 local_save_key,
             )
-            self.adapter.backup_local_save(self.app_dir / "local_backups", save_name=name)
-            tmp_zip = self.app_dir / f"_incoming_save_{self.adapter.game_id}_{slot_id}.zip"
+            self.adapter.backup_local_save(self.state_dir / "local_backups", save_name=name)
+            tmp_zip = self.state_dir / f"_incoming_save_{self.adapter.game_id}_{slot_id}.zip"
             if storage.download_save(tmp_zip, effective_cloud_key):
                 self.adapter.unzip_save(tmp_zip)
                 tmp_zip.unlink(missing_ok=True)
@@ -356,7 +365,7 @@ class SessionController:
             if update_status_text:
                 update_status_text(f"{self.adapter.display_name} closed — uploading your save...")
 
-            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}_{slot_id}.zip"
+            out_zip = self.state_dir / f"_outgoing_save_{self.adapter.game_id}_{slot_id}.zip"
 
             zip_start = time.time()
             log.info("Zipping save...")
@@ -504,7 +513,7 @@ class SessionController:
         uploaded_successfully = False
         uploaded_key = None
         try:
-            out_zip = self.app_dir / f"_outgoing_save_{self.adapter.game_id}_{slot_id}.zip"
+            out_zip = self.state_dir / f"_outgoing_save_{self.adapter.game_id}_{slot_id}.zip"
             log.info("Zipping current save for manual upload...")
             self.adapter.zip_save(out_zip, save_name=name)
             uploaded_key = storage.new_save_key()

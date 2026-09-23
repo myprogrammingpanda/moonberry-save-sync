@@ -33,6 +33,7 @@ from games._discovery import discover_adapters
 
 APP_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = APP_DIR / "config.json"
+STATE_DIR = APP_DIR / "state"
 
 OLD_PREFIXES = {
     "valheim": "world_save_",
@@ -97,7 +98,8 @@ def migrate_game(game_id: str, adapter, cfg: dict, coordinator: Coordinator, app
     coordinator.release_host(save_key=latest_new_key)
     print(f"[{game_id}] coordinator's save_keys['{game_id}'] updated to '{latest_new_key}'.")
 
-    local_record_path = APP_DIR / f"local_version_{game_id}.txt"
+    STATE_DIR.mkdir(exist_ok=True)
+    local_record_path = STATE_DIR / f"local_version_{game_id}.txt"
     local_record_path.write_text(latest_new_key)
     print(f"[{game_id}] local_version_{game_id}.txt updated to '{latest_new_key}' (avoids a redundant re-download).\n")
 

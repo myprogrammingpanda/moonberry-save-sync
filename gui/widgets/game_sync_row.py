@@ -24,6 +24,13 @@ class GameSyncRow(QWidget):
         super().__init__(parent)
         self.game_id = game_id
         self.controller = controller
+        # None means "use the configured default save" (the ordinary
+        # case). Set by GameDetailPanel._set_active_save while a
+        # Saves-tab-initiated Host session for a non-default save is
+        # in flight, so Force Upload/Download stay scoped to the SAME
+        # save Overview's title/Host Now/Play Now are currently about,
+        # instead of silently acting on the default save underneath it.
+        self._save_name: str | None = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -51,6 +58,9 @@ class GameSyncRow(QWidget):
         self.upload_button.setEnabled(enabled)
         self.download_button.setEnabled(enabled)
 
+    def set_active_save(self, save_name: str | None) -> None:
+        self._save_name = save_name
+
     def _on_upload(self):
         # Force Upload has no version awareness of its own -- it just
         # uploads whatever's on disk. Two checks run first, off the GUI
@@ -66,12 +76,14 @@ class GameSyncRow(QWidget):
         self.busy_changed.emit(True)
         self.status_label.setText("Checking version...")
 
+        save_name = self._save_name
+
         def worker():
-            is_redundant, redundant_msg = self.controller.check_upload_redundancy()
+            is_redundant, redundant_msg = self.controller.check_upload_redundancy(save_name=save_name)
             if is_redundant:
                 self.upload_precheck_done.emit("redundant", redundant_msg)
                 return
-            is_stale, stale_msg = self.controller.check_upload_freshness()
+            is_stale, stale_msg = self.controller.check_upload_freshness(save_name=save_name)
             if is_stale:
                 self.upload_precheck_done.emit("stale", stale_msg)
             else:
@@ -112,9 +124,10 @@ class GameSyncRow(QWidget):
         self.download_button.setEnabled(False)
         self.busy_changed.emit(True)
         self.status_label.setText("Working...")
+        save_name = self._save_name
 
         def worker():
-            success, msg = fn()
+            success, msg = fn(save_name=save_name)
             self.sync_finished.emit(self.game_id, action, success, msg)
 
         threading.Thread(target=worker, daemon=True).start()

@@ -1,9 +1,5 @@
 config.json
-sync.log
-player_name.txt
-local_version_*.txt
-local_content_hash_*.txt
-local_backups/
+state/
 __pycache__/
 *.pyc
 .wrangler/
