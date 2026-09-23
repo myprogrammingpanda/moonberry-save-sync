@@ -201,15 +201,32 @@ class MainWindow(QMainWindow):
     # -- status polling --
 
     def run_status_poller(self):
-        poller = StatusPoller(
+        self.poller = StatusPoller(
             self.coordinator, self.game_controllers, self.player_name, self.update_checker, self.poll_interval_seconds
         )
         t = threading.Thread(
-            target=poller.run_loop,
+            target=self.poller.run_loop,
             args=(self.poller_status.emit, self.desktop_notify.emit, self.update_info.emit),
             daemon=True,
         )
         t.start()
+
+        # Wake the poll loop early right after something THIS process just
+        # did that changes the coordinator's global claim state, instead of
+        # leaving every other panel (and every other player) waiting out
+        # the rest of poll_interval_seconds to find out -- see
+        # StatusPoller.trigger_poll. host_now_finished covers both Overview's
+        # own Host Now and a Saves-tab "slot in and host" (same underlying
+        # call) -- fired on any outcome, including a rejected claim attempt,
+        # which just means one harmless extra poll. Force Upload also
+        # releases a claim; Force Download/Sync never claim one at all, so
+        # they're deliberately not wired here -- there'd be nothing new for
+        # a poll to learn.
+        for panel in self.panels.values():
+            panel.host_now_finished.connect(lambda *_args: self.poller.trigger_poll())
+            panel.sync_row.sync_finished.connect(
+                lambda _game_id, action, *_rest: self.poller.trigger_poll() if action == "upload" else None
+            )
 
     def _on_poller_status(self, status: dict | None):
         if status is None:

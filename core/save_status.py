@@ -66,6 +66,23 @@ def cloud_key_uploaded_at(cloud_key: str | None, own_prefix: str) -> datetime | 
         return None
 
 
+def resolve_slot_hosting_by(status: dict, game_id: str, slot_id: str) -> str | None:
+    """The player name currently hosting THIS save, or None if nobody is
+    (or someone's hosting a different game/save -- the coordinator's
+    claim is global, but only ever names one specific game+slot at a
+    time). save_slot is only present on claims from a client running
+    this multi-save-aware version or later; an older client's claim has
+    no save_slot at all, so it can never match a specific slot here --
+    the sidebar/Overview status text (which only cares about game_id,
+    not slot) still shows "someone is hosting" correctly either way,
+    this is purely the Saves tab's per-row detail."""
+    if not status.get("hosting") or status.get("game_id") != game_id:
+        return None
+    if status.get("save_slot") != slot_id:
+        return None
+    return status.get("host_name")
+
+
 @dataclass
 class SaveRow:
     save_name: str
@@ -77,6 +94,7 @@ class SaveRow:
     cloud_modified: datetime | None
     owner: str | None
     status: str  # "in_sync" | "cloud_has_changes" | "local_only" | "cloud_only"
+    hosting_by: str | None  # player name currently hosting this exact save, or None
 
 
 def compute_save_rows(controller, status: dict) -> list["SaveRow"]:
@@ -108,7 +126,10 @@ def compute_save_rows(controller, status: dict) -> list["SaveRow"]:
         else:
             row_status = "cloud_has_changes"
 
-        rows[slot_id] = SaveRow(save_name, slot_id, True, modified, size, cloud_key, cloud_modified, owner, row_status)
+        hosting_by = resolve_slot_hosting_by(status, game_id, slot_id)
+        rows[slot_id] = SaveRow(
+            save_name, slot_id, True, modified, size, cloud_key, cloud_modified, owner, row_status, hosting_by
+        )
 
     for slot_id, cloud_key in cloud_slots.items():
         if slot_id in rows or not cloud_key:
@@ -117,6 +138,9 @@ def compute_save_rows(controller, status: dict) -> list["SaveRow"]:
         owner = resolve_slot_owner(status, game_id, slot_id)
         own_prefix = adapter.save_key_prefix_for(display_name)
         cloud_modified = cloud_key_uploaded_at(cloud_key, own_prefix)
-        rows[slot_id] = SaveRow(display_name, slot_id, False, None, None, cloud_key, cloud_modified, owner, "cloud_only")
+        hosting_by = resolve_slot_hosting_by(status, game_id, slot_id)
+        rows[slot_id] = SaveRow(
+            display_name, slot_id, False, None, None, cloud_key, cloud_modified, owner, "cloud_only", hosting_by
+        )
 
     return sorted(rows.values(), key=lambda r: r.save_name.lower())

@@ -7,11 +7,20 @@ be SessionController.run_loop() back when only one game's controller ran
 at a time."""
 
 import logging
+import threading
 import time
 
 import requests
 
 log = logging.getLogger("moonberry-sync")
+
+# How long an early-triggered poll (see trigger_poll) waits before actually
+# hitting the coordinator, once woken -- same reasoning and same duration
+# as the stale-claim self-heal's own post-release pause below: Cloudflare
+# KV is only eventually consistent, so a read immediately after a write
+# (ours or anyone else's, and a trigger fires right after one of ours) can
+# still come back showing the pre-write state.
+EARLY_POLL_SETTLE_SECONDS = 3
 
 
 class StatusPoller:
@@ -21,6 +30,20 @@ class StatusPoller:
         self.player_name = player_name
         self.update_checker = update_checker
         self.poll_interval_seconds = poll_interval_seconds
+        self._poll_now = threading.Event()
+
+    def trigger_poll(self) -> None:
+        """Wakes the poll loop early instead of waiting out the rest of
+        poll_interval_seconds -- for callers that just changed something
+        coordinator-visible themselves (a host claim released) and want
+        the rest of the app to notice sooner than the next scheduled
+        tick. Safe to call from any thread. The loop still waits
+        EARLY_POLL_SETTLE_SECONDS before actually polling (see above),
+        and the NEXT scheduled tick is a full poll_interval_seconds after
+        THIS poll, not after whenever the original tick would have
+        landed -- an early wake resets the timer, it doesn't just
+        squeeze in an extra poll."""
+        self._poll_now.set()
 
     def run_loop(self, on_status=None, notify_desktop=None, on_update_available=None):
         """on_status, if given, is called every poll with the raw status
@@ -102,4 +125,7 @@ class StatusPoller:
                 if on_status:
                     on_status(None)
 
-            time.sleep(self.poll_interval_seconds)
+            woke_early = self._poll_now.wait(timeout=self.poll_interval_seconds)
+            self._poll_now.clear()
+            if woke_early:
+                time.sleep(EARLY_POLL_SETTLE_SECONDS)

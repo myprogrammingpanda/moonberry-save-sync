@@ -229,7 +229,13 @@ class GameDetailPanel(QWidget):
         self._set_busy(False)
         self.stop_host_button.setEnabled(False)
         self.host_stack.setCurrentWidget(self.host_button)
-        self._set_active_save(None)  # back to the configured default for next time
+        # Deliberately NOT reset back to None/default here: _active_save_name
+        # is "default/last-used" (see _set_active_save's docstring), so a
+        # session you slotted in from the Saves tab stays the active save
+        # -- and stays reflected in the title -- until you explicitly slot
+        # in something else, rather than silently snapping back to the
+        # configured default the moment the session ends (confusing: the
+        # title would stop matching what you actually just did).
         self.save_table.refresh_local_scan()
         if success:
             QMessageBox.information(self, "Host Now", msg)

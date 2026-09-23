@@ -86,23 +86,33 @@ class _SaveRowActions(QWidget):
         layout.setContentsMargins(2, 0, 2, 0)
 
         self.host_button = QPushButton("Host")
-        self.host_button.setToolTip(
-            "Switches to the Overview tab with this save slotted in, then starts Host Now for it."
-        )
+        self.sync_button = QPushButton("Sync")
+        if row.hosting_by:
+            self.host_button.setToolTip(f"{row.hosting_by} is currently hosting this save.")
+            self.sync_button.setToolTip(f"{row.hosting_by} is currently hosting this save -- can't sync while that's true.")
+        else:
+            self.host_button.setToolTip(
+                "Switches to the Overview tab with this save slotted in, then starts Host Now for it."
+            )
+            self.sync_button.setToolTip(
+                "Downloads the cloud version of this save if it differs from local. Never claims the host slot."
+            )
         self.host_button.clicked.connect(self._on_host)
         layout.addWidget(self.host_button)
-
-        self.sync_button = QPushButton("Sync")
-        self.sync_button.setToolTip(
-            "Downloads the cloud version of this save if it differs from local. Never claims the host slot."
-        )
-        self.sync_button.setEnabled(bool(row.cloud_key))
         self.sync_button.clicked.connect(self._on_sync)
         layout.addWidget(self.sync_button)
 
+        self.set_enabled(True)
+
     def set_enabled(self, enabled: bool) -> None:
-        self.host_button.setEnabled(enabled)
-        self.sync_button.setEnabled(enabled and bool(self.row.cloud_key))
+        # A row currently claimed by anyone (its own SaveRow.hosting_by)
+        # stays disabled even when the rest of the tab is otherwise idle --
+        # Host would immediately bounce off the coordinator's claim check,
+        # and Sync on a save mid-hosting-session isn't a safe thing to
+        # invite a click on.
+        effective = enabled and not self.row.hosting_by
+        self.host_button.setEnabled(effective)
+        self.sync_button.setEnabled(effective and bool(self.row.cloud_key))
 
     def _on_host(self):
         answer = QMessageBox.question(
@@ -239,8 +249,14 @@ class SaveTableWidget(QWidget):
             self.table.setItem(i, 1, QTableWidgetItem(_format_modified(row.local_modified)))
             self.table.setItem(i, 2, QTableWidgetItem(row.owner or "—"))
             self.table.setItem(i, 3, QTableWidgetItem(_format_size(row.local_size_bytes)))
-            status_item = QTableWidgetItem(STATUS_LABELS.get(row.status, row.status))
-            status_item.setToolTip(STATUS_TOOLTIPS.get(row.status, ""))
+            if row.hosting_by:
+                status_text = f"Hosting — {row.hosting_by}"
+                status_tooltip = f"{row.hosting_by} currently holds the host slot for this save."
+            else:
+                status_text = STATUS_LABELS.get(row.status, row.status)
+                status_tooltip = STATUS_TOOLTIPS.get(row.status, "")
+            status_item = QTableWidgetItem(status_text)
+            status_item.setToolTip(status_tooltip)
             self.table.setItem(i, 4, status_item)
 
             actions = _SaveRowActions(
