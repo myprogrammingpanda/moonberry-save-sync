@@ -40,6 +40,13 @@ without changing how it works today.
    and use **Move to Local** on the world first — worlds left in Xbox
    cloud storage can't be synced.
 
+   **RuneScape: Dragonwilds** has the same **Edition** dropdown: **Steam**
+   or **Xbox app / Game Pass (PC)**. Steam and Game Pass players can share
+   one world; only the world is synced, never your character. Game Pass
+   players: launch Dragonwilds and load or create any world once on your
+   PC before syncing. The Game Pass side has been tested on a real
+   install; the Steam side hasn't yet.
+
    **Setting this up for a new friend group?** See [`SETUP.md`](SETUP.md)
    for deploying your own coordinator and storage — only one person per
    group needs to do this, once.

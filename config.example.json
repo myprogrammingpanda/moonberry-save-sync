@@ -31,6 +31,12 @@
       "zomboid_saves_folder": "%userprofile%\\Zomboid\\Saves\\Multiplayer",
       "zomboid_server_name": "servertest",
       "zomboid_launch_uri": "steam://run/108600"
+    },
+    "dragonwilds": {
+      "edition": "steam",
+      "dragonwilds_saves_folder": "%LOCALAPPDATA%\\RSDragonwilds\\Saved\\SaveGames",
+      "dragonwilds_world_name": "YourWorldName",
+      "dragonwilds_launch_uri": "steam://rungameid/1374490"
     }
   }
 }
