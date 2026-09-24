@@ -154,12 +154,10 @@ class GameConfigForm:
 
     # -- results --
 
-    def check_required(self) -> list[tuple[str, QLineEdit]]:
-        """(label, entry) for every empty field -- all of this form's
-        fields are required -- outlining each one in red."""
-        fields = self.adapter_cls.config_fields
-        empty = set(mark_empty([self.entries[key] for key, _label, _kind in fields]))
-        return [(label, self.entries[key]) for key, label, _kind in fields if self.entries[key] in empty]
+    def check_required(self) -> list[QLineEdit]:
+        """Every empty field (all of this form's fields are required), each
+        outlined in red, in form order."""
+        return mark_empty([self.entries[key] for key, _label, _kind in self.adapter_cls.config_fields])
 
     def apply_to(self, game_section: dict) -> None:
         """Writes this form's values into a copy of config["games"][game_id],

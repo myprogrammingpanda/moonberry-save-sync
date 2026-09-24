@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFormLayout,
     QHBoxLayout,
-    QMessageBox,
     QPushButton,
     QVBoxLayout,
 )
@@ -57,9 +56,7 @@ class GameSettingsDialog(QDialog):
     def _on_save(self):
         missing = self.game_form.check_required()
         if missing:
-            missing[0][1].setFocus()
-            labels = [label for label, _entry in missing]
-            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(labels))
+            missing[0].setFocus()
             return
 
         cfg = dict(self.existing_cfg)  # preserve every unrelated key as-is

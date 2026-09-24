@@ -246,20 +246,16 @@ class SettingsDialog(QDialog):
             return
 
         required = [
-            (label, self.entries[key])
-            for key, label, is_required, _secret in _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS
+            self.entries[key]
+            for key, _label, is_required, _secret in _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS
             if is_required
         ]
-        empty = mark_empty([entry for _label, entry in required])
-        missing = [(label, entry) for label, entry in required if entry in empty]
-        missing += self.game_form.check_required()
+        missing = mark_empty(required) + self.game_form.check_required()
 
         if missing:
-            first = missing[0][1]
+            first = missing[0]
             self.scroll.ensureWidgetVisible(first)
             first.setFocus()
-            labels = [label for label, _entry in missing]
-            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(labels))
             return
 
         def _int_or_default(key, default):
