@@ -3,3 +3,4 @@ state/
 __pycache__/
 *.pyc
 .wrangler/
+.shortcuts-offered

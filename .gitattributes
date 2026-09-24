@@ -1,0 +1,6 @@
+# Windows batch/PowerShell scripts must keep CRLF line endings (labels and
+# goto misbehave in .bat files with LF endings), in checkouts and in the
+# git-archive release zip alike.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.ico binary

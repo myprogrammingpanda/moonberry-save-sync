@@ -12,16 +12,20 @@ without changing how it works today.
    On the installer's first screen, check **"Add python.exe to PATH"**.
 2. **Download this app**: go to the [Releases page](../../releases/latest)
    and download **`moonberry-save-sync-vX.X.X.zip`** under Assets (not
-   the auto-generated "Source code" links above it), then extract it
-   somewhere convenient (e.g. `Documents\MoonberrySaveSync`).
-3. Open a terminal in that folder (Windows: right-click inside the folder
-   in File Explorer → **Open in Terminal**) and run:
-   ```
-   pip install -r requirements.txt
-   ```
-4. Run the app by double-clicking **`run.bat`** in that folder (or from a
-   terminal: `python main.py`).
-   The **first time** you run it, a setup window will appear asking for
+   the auto-generated "Source code" links above it), then right-click it
+   → **Extract All...** into a folder you'll keep (e.g.
+   `Documents\MoonberrySaveSync`). Don't run it from inside the zip.
+3. Double-click **`run.bat`** in that folder. The **first time**, a
+   console window opens and installs the packages the app needs — this
+   takes a minute or two and needs an internet connection. When it's
+   done, you're offered **Desktop** and **Start Menu** shortcuts (tick
+   whichever you want). After that, the app opens straight away every
+   time. (Skipped the shortcuts? Double-click **`create-shortcuts.bat`**
+   any time to make them.)
+
+   If anything goes wrong — Python missing or too old, no internet —
+   `run.bat` pops up a message saying what to do.
+4. The **first time** the app opens, a setup window will appear asking for
    a few values (coordinator URL, shared secret, storage credentials,
    etc.) — get these from whoever's running the group's coordinator/bot
    (not something you make up yourself). Fill them in and hit Save.
