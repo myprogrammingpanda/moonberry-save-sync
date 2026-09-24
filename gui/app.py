@@ -21,25 +21,31 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QTextCharFormat
+from PySide6.QtGui import QColor, QKeySequence, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QSystemTrayIcon,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from core.status_poller import StatusPoller
+from gui.app_icon import make_app_icon
+from gui.close_dialog import CloseChoiceDialog
 from gui.log_handler import QtLogHandler
+from gui.single_instance import start_show_server
 from gui.theme import apply_theme, resolve_theme, set_titlebar_theme
 from gui.widgets.game_detail_panel import GameDetailPanel
 from gui.widgets.toggle_switch import ToggleSwitch
@@ -98,6 +104,7 @@ class MainWindow(QMainWindow):
 
         self._build_menu_bar()
         self._build_central_widget()
+        self._build_tray_icon()
 
         self._log_handler = QtLogHandler()
         self._log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -120,6 +127,9 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
         file_menu.addAction("Settings...", self._open_settings)
+        file_menu.addSeparator()
+        quit_action = file_menu.addAction("Quit", self.quit_app)
+        quit_action.setShortcut(QKeySequence("Ctrl+Q"))
 
         corner = QWidget()
         corner_layout = QHBoxLayout(corner)
@@ -190,6 +200,28 @@ class MainWindow(QMainWindow):
 
         self._select_game(self.active_game_id)
 
+    def _build_tray_icon(self):
+        # Stays up for as long as the app runs (not only while hidden), so
+        # right-click > Quit is always there. None when the desktop has no
+        # tray at all -- closeEvent then just exits instead of offering to
+        # hide somewhere the user could never get the window back from.
+        self.tray: QSystemTrayIcon | None = None
+        self._tray_hint_shown = False
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            log.info("No system tray available -- closing the window will exit the app.")
+            return
+
+        self.tray = QSystemTrayIcon(QApplication.windowIcon(), self)
+        self.tray.setToolTip("Moonberry Save-Sync")
+        self._tray_menu = QMenu(self)
+        self._tray_menu.addAction("Show Moonberry Save-Sync", self.show_from_tray)
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("Quit", self.quit_app)
+        self.tray.setContextMenu(self._tray_menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        self.tray.messageClicked.connect(self.show_from_tray)
+        self.tray.show()
+
     def _select_game(self, game_id: str) -> None:
         for i in range(self.game_list.count()):
             item = self.game_list.item(i)
@@ -236,6 +268,7 @@ class MainWindow(QMainWindow):
             )
 
     def _on_poller_status(self, status: dict | None):
+        self._update_tray_tooltip(status)
         if status is None:
             self.status_label.setText("Coordinator unreachable — retrying...")
             return
@@ -328,7 +361,7 @@ class MainWindow(QMainWindow):
 
         self.status_changed.emit("Update ready — restarting...")
         begin_relaunch(self.app_dir, Path(staging_dir))
-        self.close()
+        self._exit_now()  # not close() -- that would ask "hide to tray or exit?", and the helper needs us gone
 
     def _on_update_info(self, release_info: dict | None):
         self._pending_release_info = release_info
@@ -340,26 +373,33 @@ class MainWindow(QMainWindow):
 
     # -- theme / settings --
 
-    def _read_theme_pref(self) -> str:
+    def _read_config(self) -> dict:
         try:
-            cfg = json.loads((self.app_dir / "config.json").read_text(encoding="utf-8"))
-            return cfg.get("theme", "system")
+            return json.loads((self.app_dir / "config.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return "system"
+            return {}
+
+    def _write_config_value(self, key: str, value) -> None:
+        """Read-modify-write of one UI preference, leaving the rest of
+        config.json untouched. Preferences only -- never worth failing
+        over."""
+        config_path = self.app_dir / "config.json"
+        try:
+            cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            cfg[key] = value
+            config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    def _read_theme_pref(self) -> str:
+        return self._read_config().get("theme", "system")
 
     def _on_dark_toggled(self, is_dark: bool):
         self.theme_name = "dark" if is_dark else "light"
         self.colors = apply_theme(QApplication.instance(), self.theme_name)
         set_titlebar_theme(self, self.theme_name == "dark")
         self.dark_switch.set_palette(self.colors)
-
-        config_path = self.app_dir / "config.json"
-        try:
-            cfg = json.loads(config_path.read_text(encoding="utf-8"))
-            cfg["theme"] = self.theme_name
-            config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-        except (OSError, json.JSONDecodeError):
-            pass  # cosmetic preference only -- not worth failing over
+        self._write_config_value("theme", self.theme_name)
 
     def _open_settings(self):
         from games._discovery import discover_adapters
@@ -376,7 +416,116 @@ class MainWindow(QMainWindow):
                 "Settings saved. Restart the app for changes to take effect.",
             )
 
+    # -- closing / tray --
+
     def closeEvent(self, event):
+        # Ignored up front: every path below either hides the window, exits
+        # the whole process outright (_exit_now), or backs out entirely.
+        # close_action is re-read each time, so a change made in Settings
+        # applies straight away, no restart needed.
+        event.ignore()
+        action = self._read_config().get("close_action", "ask")
+        if self.tray is None:
+            action = "exit"
+        elif action not in ("tray", "exit"):
+            dialog = CloseChoiceDialog(self.theme_name == "dark", parent=self)
+            if dialog.exec() != QDialog.Accepted or not dialog.choice:
+                return
+            action = dialog.choice
+            if dialog.remember:
+                self._write_config_value("close_action", action)
+                log.info("Remembered close choice: %s (change it in File > Settings).", action)
+
+        if action == "tray":
+            self.hide_to_tray()
+        else:
+            self.quit_app()
+
+    def hide_to_tray(self):
+        """Just hides the window -- any Host Now session, sync, or status
+        polling keeps running exactly as before."""
+        self.hide()
+        if not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            self.tray.showMessage(
+                "Still running in the tray",
+                "Moonberry Save-Sync keeps syncing in the background. Click the tray icon to open it, "
+                "or right-click it and choose Quit to exit.",
+                QApplication.windowIcon(),
+                6000,
+            )
+
+    def show_from_tray(self):
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.show_from_tray()
+
+    def _update_tray_tooltip(self, status: dict | None):
+        if self.tray is None:
+            return
+        if status is None:
+            detail = "Coordinator unreachable"
+        elif status.get("hosting"):
+            controller = self.game_controllers.get(status.get("game_id"))
+            game = controller.adapter.display_name if controller else "a game"
+            detail = f"{status.get('host_name') or 'Someone'} is hosting {game}"
+        else:
+            detail = "Nobody is hosting"
+        self.tray.setToolTip(f"Moonberry Save-Sync\n{detail}")
+
+    def _exit_warning(self) -> str | None:
+        """Why quitting right now would lose something, or None if it's
+        safe. The process exits hard (see _exit_now), so a Host Now session
+        in progress never gets to zip/upload the save or release the claim."""
+        controllers = self.game_controllers.values()
+        hosting = [c.adapter.display_name for c in controllers if c.is_hosting]
+        if hosting:
+            return (
+                f"You're hosting {' and '.join(hosting)} right now. Quitting now means your save won't be "
+                "uploaded, and everyone else will keep seeing you as the host until you open Moonberry "
+                "Save-Sync again.\n\n"
+                "Close the game (or click Stop Host) and let the upload finish first — or hide the app to "
+                "the tray instead, which keeps the session running."
+            )
+        syncing = [c.adapter.display_name for c in controllers if c.is_syncing]
+        if syncing:
+            return (
+                f"A save upload/download for {' and '.join(syncing)} is still in progress. Quitting now "
+                "could leave it half-finished."
+            )
+        return None
+
+    def quit_app(self):
+        """The one real exit path (window X -> Exit, File > Quit, tray
+        Quit). Confirms first if a session or sync is in progress."""
+        warning = self._exit_warning()
+        if warning:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Quit Moonberry Save-Sync?")
+            box.setText(warning)
+            quit_button = box.addButton("Quit anyway", QMessageBox.DestructiveRole)
+            cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+            box.setDefaultButton(cancel_button)
+            box.exec()
+            if box.clickedButton() is not quit_button:
+                return
+            log.warning("Quitting while a session/sync was still in progress (user confirmed).")
+        self._exit_now()
+
+    def _exit_now(self):
+        log.info("Exiting.")
+        if self.tray is not None:
+            # os._exit skips all Qt cleanup -- without this, a dead icon
+            # lingers in the tray until the mouse passes over it.
+            self.tray.hide()
         os._exit(0)
 
     # -- log / notifications --
@@ -393,7 +542,12 @@ class MainWindow(QMainWindow):
 
     def _on_desktop_notify(self, title: str, message: str):
         self.status_changed.emit(f"{title}: {message}")
-        self._flash_attention()
+        if self.tray is not None and (not self.isVisible() or self.isMinimized()):
+            # Beeping/flashing a hidden window does nothing useful -- a tray
+            # notification is the only thing the user can actually see.
+            self.tray.showMessage(title, message, QApplication.windowIcon(), 8000)
+        else:
+            self._flash_attention()
 
     def _flash_attention(self):
         QApplication.beep()
@@ -421,6 +575,12 @@ class App:
         poll_interval_seconds: float,
     ):
         self.qapp = QApplication.instance() or QApplication(sys.argv)
+        # Hidden to the tray, the main window isn't "open" -- without this,
+        # closing any dialog shown while it's hidden (e.g. the quit
+        # confirmation from the tray menu) would count as the last window
+        # closing and silently end the app.
+        self.qapp.setQuitOnLastWindowClosed(False)
+        self.qapp.setWindowIcon(make_app_icon())
         self.window = MainWindow(
             game_controllers,
             active_game_id,
@@ -433,6 +593,9 @@ class App:
         )
 
     def run(self):
+        self._show_server = start_show_server(self.window.show_from_tray, parent=self.window)
+        if self._show_server is None:
+            log.warning("Couldn't start the single-instance listener -- a second launch may not restore this window.")
         self.window.show()
         self.window.run_status_poller()
         self.qapp.exec()

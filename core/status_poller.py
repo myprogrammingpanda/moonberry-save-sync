@@ -68,7 +68,7 @@ class StatusPoller:
                     and status.get("host_name") == self.player_name
                     and controller is not None
                     and not controller.adapter.is_running()
-                    and not controller._host_now_pending
+                    and not controller.is_hosting
                 ):
                     # Our own claim, but that game isn't actually running on
                     # this machine, AND no Host Now call in this process is

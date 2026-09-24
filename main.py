@@ -131,10 +131,29 @@ def _show_fatal_error(exc: BaseException) -> None:
             pass
 
 
+def _show_existing_instance() -> None:
+    """Asks the running instance to show itself -- works even when it's
+    hidden to the system tray, which _focus_existing_window's visible-
+    window search can't see. Falls back to that search if nothing answers
+    (the running copy is still in the first-run setup wizard, or is an
+    older version without the listener)."""
+    try:
+        from PySide6.QtCore import QCoreApplication
+
+        from gui.single_instance import signal_running_instance
+
+        _app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+        if signal_running_instance():
+            return
+    except Exception:
+        log.exception("Couldn't signal the running instance -- falling back to finding its window.")
+    _focus_existing_window()
+
+
 def main():
     if not _acquire_single_instance_lock():
         log.info("Another instance is already running -- focusing it instead of opening a new one.")
-        _focus_existing_window()
+        _show_existing_instance()
         return
 
     from core.config import load_config

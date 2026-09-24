@@ -55,6 +55,14 @@ _MISC_FIELDS = [
     ("github_repo", "GitHub repo (owner/name, for update checks)", False, False),
 ]
 
+# config.json "close_action" value -> label. "ask" shows the Hide to tray /
+# Exit prompt (see gui/close_dialog.py) whenever the window's X is pressed.
+_CLOSE_ACTION_LABELS = {
+    "ask": "Ask every time",
+    "tray": "Hide to system tray",
+    "exit": "Exit the app",
+}
+
 _ADVANCED_FIELDS = [
     ("poll_interval_seconds", "Poll interval (seconds)", 30),
     ("max_saved_versions", "Saved versions to keep", 5),
@@ -119,6 +127,16 @@ class SettingsDialog(QDialog):
         self.game_group_layout = QFormLayout(self.game_group)
         self.content_layout.addWidget(self.game_group)
         self._rebuild_game_section(default_game)
+
+        window_group = QGroupBox("Window")
+        window_layout = QFormLayout(window_group)
+        self.close_action_combo = QComboBox()
+        for value, label in _CLOSE_ACTION_LABELS.items():
+            self.close_action_combo.addItem(label, value)
+        current_close = self.existing_cfg.get("close_action", "ask")
+        self.close_action_combo.setCurrentIndex(max(0, self.close_action_combo.findData(current_close)))
+        window_layout.addRow("When closing the window", self.close_action_combo)
+        self.content_layout.addWidget(window_group)
 
         advanced_group = QGroupBox("Advanced")
         advanced_layout = QFormLayout(advanced_group)
@@ -251,6 +269,7 @@ class SettingsDialog(QDialog):
             cfg[key] = self.entries[key].text().strip()
         for key, _label, default in _ADVANCED_FIELDS:
             cfg[key] = _int_or_default(key, default)
+        cfg["close_action"] = self.close_action_combo.currentData()
 
         games_cfg = dict(cfg.get("games", {}))
         game_section = dict(games_cfg.get(game_id, {}))

@@ -106,6 +106,20 @@ class SessionController:
         # handed from the GUI thread to Host Now's own thread.
         self._submitted_codes: queue.Queue[str] = queue.Queue()
 
+    @property
+    def is_hosting(self) -> bool:
+        """True while this PC holds the host claim through Host Now (from
+        the claim until the upload/release finishes). Exiting the app in
+        this window strands both the claim and the save that hasn't been
+        uploaded yet."""
+        return self._host_now_pending
+
+    @property
+    def is_syncing(self) -> bool:
+        """True while any zip/upload/download flow is in progress (Host
+        Now, Force Upload, Force Download)."""
+        return self._sync_lock.locked()
+
     def _resources_for(self, save_name: str | None) -> tuple:
         """Resolves (and lazily builds/caches) the (storage, local_record,
         local_content_hash, save_name) tuple for the given save, or the
