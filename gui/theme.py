@@ -191,6 +191,9 @@ def build_stylesheet(palette: dict) -> str:
     QLineEdit:disabled, QComboBox:disabled {{
         color: {p['dim']};
     }}
+    QLineEdit[invalid="true"] {{
+        border: 1px solid {p['error']};
+    }}
     QComboBox QAbstractItemView {{
         background: {p['entry_bg']};
         color: {p['entry_fg']};

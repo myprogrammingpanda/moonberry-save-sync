@@ -21,8 +21,12 @@ class DiscordNotifier:
         self.url = moonberry_url
         self.secret = moonberry_secret
 
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url and self.secret)
+
     def notify(self, game_id: str, host_name: str, join_code: str | None = None, event: str = "started"):
-        if not self.url or not self.secret:
+        if not self.enabled:
             return  # Moonberry integration not configured, skip silently
 
         try:

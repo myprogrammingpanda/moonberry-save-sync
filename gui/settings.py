@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from gui.theme import apply_theme, resolve_theme, set_titlebar_theme
 from gui.widgets.game_config_form import GameConfigForm
+from gui.widgets.required_field import mark_empty, track_required
 
 # (key, label, required, secret)
 _TOP_LEVEL_FIELDS = [
@@ -94,12 +95,12 @@ class SettingsDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
         content = QWidget()
         self.content_layout = QVBoxLayout(content)
-        scroll.setWidget(content)
-        outer.addWidget(scroll, stretch=1)
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll, stretch=1)
 
         game_ids = sorted(adapters)
         default_game = (
@@ -179,6 +180,8 @@ class SettingsDialog(QDialog):
     def _add_field(self, form: QFormLayout, key: str, label: str, required: bool, secret: bool, kind: str = "text"):
         label_text = f"{label} *" if required else label
         entry = QLineEdit(str(self.existing_cfg.get(key, "")))
+        if required:
+            track_required(entry)
         if secret:
             entry.setEchoMode(QLineEdit.Password)
             self._secret_entries.append(entry)
@@ -242,14 +245,21 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "Missing game", "No game selected, or no game modules were found.")
             return
 
-        missing = []
-        for key, label, required, _secret in _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS:
-            if required and not self.entries[key].text().strip():
-                missing.append(label)
-        missing += self.game_form.missing_labels()
+        required = [
+            (label, self.entries[key])
+            for key, label, is_required, _secret in _TOP_LEVEL_FIELDS + _COORDINATOR_FIELDS + _STORAGE_FIELDS
+            if is_required
+        ]
+        empty = mark_empty([entry for _label, entry in required])
+        missing = [(label, entry) for label, entry in required if entry in empty]
+        missing += self.game_form.check_required()
 
         if missing:
-            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(missing))
+            first = missing[0][1]
+            self.scroll.ensureWidgetVisible(first)
+            first.setFocus()
+            labels = [label for label, _entry in missing]
+            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(labels))
             return
 
         def _int_or_default(key, default):

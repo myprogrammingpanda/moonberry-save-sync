@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.game_base import EDITION_KEY
+from gui.widgets.required_field import mark_empty, track_required
 
 
 class GameConfigForm:
@@ -37,6 +38,7 @@ class GameConfigForm:
             # Only fill in an edition default where nothing is saved yet
             # (first run) -- an existing value is always shown as-is.
             entry = QLineEdit(str(existing_game_cfg.get(key) or preset.get(key, "")))
+            track_required(entry)
             self.entries[key] = entry
 
             if kind == "text":
@@ -152,8 +154,12 @@ class GameConfigForm:
 
     # -- results --
 
-    def missing_labels(self) -> list[str]:
-        return [label for key, label, _kind in self.adapter_cls.config_fields if not self.entries[key].text().strip()]
+    def check_required(self) -> list[tuple[str, QLineEdit]]:
+        """(label, entry) for every empty field -- all of this form's
+        fields are required -- outlining each one in red."""
+        fields = self.adapter_cls.config_fields
+        empty = set(mark_empty([self.entries[key] for key, _label, _kind in fields]))
+        return [(label, self.entries[key]) for key, label, _kind in fields if self.entries[key] in empty]
 
     def apply_to(self, game_section: dict) -> None:
         """Writes this form's values into a copy of config["games"][game_id],

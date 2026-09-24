@@ -55,9 +55,11 @@ class GameSettingsDialog(QDialog):
         layout.addLayout(button_row)
 
     def _on_save(self):
-        missing = self.game_form.missing_labels()
+        missing = self.game_form.check_required()
         if missing:
-            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(missing))
+            missing[0][1].setFocus()
+            labels = [label for label, _entry in missing]
+            QMessageBox.critical(self, "Missing required fields", "Please fill in:\n- " + "\n- ".join(labels))
             return
 
         cfg = dict(self.existing_cfg)  # preserve every unrelated key as-is

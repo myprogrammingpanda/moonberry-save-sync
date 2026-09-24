@@ -111,6 +111,16 @@ class MainWindow(QMainWindow):
         self._log_handler.log_line.connect(self._append_log_line)
         logging.getLogger("moonberry-sync").addHandler(self._log_handler)
 
+        # Logged here rather than in main.py so it lands in the Activity Log
+        # too, not just sync.log -- answers "why didn't my hosting post to
+        # Discord?" at a glance. All controllers share one notifier.
+        controller = next(iter(self.game_controllers.values()), None)
+        if controller is not None:
+            if controller.notifier.enabled:
+                log.info("Discord notifications: on.")
+            else:
+                log.info("Discord notifications: off (bot URL/secret not set in Settings).")
+
         self.status_changed.connect(self.status_label.setText)
         self.desktop_notify.connect(self._on_desktop_notify)
         self.poller_status.connect(self._on_poller_status)
