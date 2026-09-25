@@ -5,12 +5,10 @@ since Play Now/Host Now used to be hardwired to a single global
 "active_game" (whichever was in config.json), which meant Host Now always
 acted on that one game regardless of which one you actually meant to host.
 
-Only one person can actually be hosting (any game) at a time -- that's
-still a single global claim via the coordinator, not concurrent per-game
-hosting -- but the coordinator's claim now carries a game_id (see
-core/status_poller.py and core/coordinator.py), so every sidebar row can
-show the right live status instead of only the one game the old UI
-happened to be locked to."""
+One person can host each game at a time (the coordinator keeps one claim
+per game -- see core/host_status.py), so several games can be hosted at
+once, by different people, and every sidebar row shows its own game's
+live status."""
 
 import ctypes
 import json
@@ -41,6 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.host_status import hosts_by_game
 from core.status_poller import StatusPoller
 from gui.app_icon import make_app_icon
 from gui.close_dialog import CloseChoiceDialog
@@ -261,7 +260,7 @@ class MainWindow(QMainWindow):
         t.start()
 
         # Wake the poll loop early right after something THIS process just
-        # did that changes the coordinator's global claim state, instead of
+        # did that changes the coordinator's claim state, instead of
         # leaving every other panel (and every other player) waiting out
         # the rest of poll_interval_seconds to find out -- see
         # StatusPoller.trigger_poll. host_now_finished covers both Overview's
@@ -294,9 +293,10 @@ class MainWindow(QMainWindow):
         controller = self.game_controllers[game_id]
         if controller.adapter.is_running():
             return "Running"
-        if status.get("hosting") and status.get("game_id") == game_id:
-            host_name = status.get("host_name")
-            join_code = status.get("join_code")
+        host = hosts_by_game(status).get(game_id)
+        if host:
+            host_name = host.get("host_name")
+            join_code = host.get("join_code")
             code_part = f" (Join Code: {join_code})" if join_code else ""
             return f"Hosting — {host_name}{code_part}"
         if controller.adapter.setup_problem():
@@ -482,10 +482,13 @@ class MainWindow(QMainWindow):
             return
         if status is None:
             detail = "Coordinator unreachable"
-        elif status.get("hosting"):
-            controller = self.game_controllers.get(status.get("game_id"))
-            game = controller.adapter.display_name if controller else "a game"
-            detail = f"{status.get('host_name') or 'Someone'} is hosting {game}"
+        elif hosts := hosts_by_game(status):
+            lines = []
+            for game_id, host in sorted(hosts.items()):
+                controller = self.game_controllers.get(game_id)
+                game = controller.adapter.display_name if controller else game_id
+                lines.append(f"{host.get('host_name') or 'Someone'} is hosting {game}")
+            detail = "\n".join(lines)
         else:
             detail = "Nobody is hosting"
         self.tray.setToolTip(f"Moonberry Save-Sync\n{detail}")

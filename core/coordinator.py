@@ -1,5 +1,6 @@
-"""Client for the Cloudflare Worker that arbitrates who's hosting. Entirely
-game-agnostic -- it just tracks a name, a join code, and a save key."""
+"""Client for the Cloudflare Worker that arbitrates who's hosting (one host
+per game). Entirely game-agnostic -- it just tracks names, join codes, and
+save keys, keyed by game_id."""
 
 import requests
 
@@ -32,20 +33,24 @@ class Coordinator:
         )
         return r.json()
 
-    def announce_join_code(self, join_code: str) -> dict:
+    # game_id on the two calls below says which of this player's claims
+    # (one per game) it's about. An older coordinator with only one global
+    # claim just ignores it.
+
+    def announce_join_code(self, game_id: str, join_code: str) -> dict:
         r = requests.post(
             f"{self.worker_url}/announce_code",
             headers=self._headers(),
-            json={"name": self.player_name, "join_code": join_code},
+            json={"name": self.player_name, "game_id": game_id, "join_code": join_code},
             timeout=10,
         )
         return r.json()
 
-    def release_host(self, save_key: str | None = None) -> dict:
+    def release_host(self, game_id: str, save_key: str | None = None) -> dict:
         r = requests.post(
             f"{self.worker_url}/release",
             headers=self._headers(),
-            json={"name": self.player_name, "save_key": save_key},
+            json={"name": self.player_name, "game_id": game_id, "save_key": save_key},
             timeout=10,
         )
         return r.json()

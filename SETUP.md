@@ -7,7 +7,7 @@ follow the regular [README](README.md) setup, not this one.
 You'll deploy two small pieces of free infrastructure:
 
 1. A **coordinator** (a Cloudflare Worker) — arbitrates who's currently
-   hosting, so two people can't both claim the host slot at once.
+   hosting each game, so two people can't both host the same game at once.
 2. **Storage** (an S3-compatible bucket) — where save files actually live.
 
 Nothing here is specific to Valheim or Zomboid — the same coordinator and
@@ -15,53 +15,42 @@ bucket work for every game the app supports, for your whole group.
 
 ## 1. The coordinator (Cloudflare Worker)
 
-You need a free [Cloudflare](https://dash.cloudflare.com/sign-up) account.
+You need a free [Cloudflare](https://dash.cloudflare.com/sign-up) account
+and [Node.js](https://nodejs.org/) (for Cloudflare's `wrangler` tool). The
+coordinator keeps its state in a Durable Object, which has to be set up
+with `wrangler` (the dashboard's code editor can't create one) — it's all
+on Cloudflare's free plan.
 
-### Dashboard path (no command line needed)
-
-1. **Workers & Pages** → **Create** → **Create Worker**. Give it a name
-   (e.g. `yourgroup-sync-coordinator`) and deploy the default template —
-   you'll replace the code next.
-2. Open the new Worker → **Edit code**, delete everything, and paste in
-   the contents of this repo's [`worker.js`](worker.js). Click **Deploy**.
-3. Create a KV namespace: **Workers & Pages** → **KV** → **Create a
-   namespace** (any name, e.g. `sync-status`).
-4. Bind it to the Worker: your Worker → **Settings** → **Bindings** →
-   **Add binding** → **KV Namespace**. Variable name must be exactly
-   `HOST_KV`, pointing at the namespace you just created.
-5. Add the shared secret: same **Settings** page → **Variables and
-   Secrets** → **Add** → name it `SHARED_SECRET`, type **Secret**
-   (encrypted), and paste in a long random value (e.g. generate one with
-   `openssl rand -hex 32`, or any password generator). This is the value
-   everyone's `config.json` will need as `worker_secret` — anyone who has
-   it can claim the host slot, so treat it like a password, not something
-   posted publicly.
-6. Note your Worker's URL, shown at the top of its dashboard page —
-   something like `https://yourgroup-sync-coordinator.<your-subdomain>.workers.dev`.
-   That's `worker_url`.
-
-### Command-line path (if you'd rather use `wrangler`)
+From a terminal in this repo's folder:
 
 ```
 npm install -g wrangler
 wrangler login
 wrangler kv namespace create sync-status
-# note the id it prints, then create wrangler.toml:
 ```
-```toml
-name = "yourgroup-sync-coordinator"
-main = "worker.js"
-compatibility_date = "2024-01-01"
 
-kv_namespaces = [
-  { binding = "HOST_KV", id = "<the id from the command above>" }
-]
-```
+Open [`wrangler.toml`](wrangler.toml) and change two things: `name` (e.g.
+`yourgroup-sync-coordinator`) and the KV namespace `id` (the one the
+command above printed). Leave the Durable Object and migration sections as
+they are. Then:
+
 ```
 wrangler secret put SHARED_SECRET
-# paste your secret at the prompt, then:
+# paste a long random value at the prompt, then:
 wrangler deploy
 ```
+
+- **`SHARED_SECRET`**: generate one with e.g. `openssl rand -hex 32`, or
+  any password generator. This is the value everyone's `config.json`
+  needs as `worker_secret` — anyone who has it can claim the host slot, so
+  treat it like a password, not something posted publicly.
+- `wrangler deploy` prints your Worker's URL, something like
+  `https://yourgroup-sync-coordinator.<your-subdomain>.workers.dev`.
+  That's `worker_url`.
+
+The KV namespace holds a readable copy of the coordinator's state (who's
+hosting, each world's latest save) — handy for a look in the Cloudflare
+dashboard under **Workers & Pages** → **KV**.
 
 ## 2. Storage (Backblaze B2 or Cloudflare R2)
 

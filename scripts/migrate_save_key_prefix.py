@@ -116,11 +116,11 @@ def migrate_game(game_id: str, adapter, cfg: dict, coordinator: Coordinator, app
     if not claim.get("ok"):
         print(
             f"[{game_id}] WARNING: could not claim to update the coordinator's record "
-            f"(someone's currently hosting?) -- objects were renamed, but the coordinator "
+            f"(someone's currently hosting this game?) -- objects were renamed, but the coordinator "
             f"still points at the OLD key. Re-run once nobody's hosting."
         )
         return
-    coordinator.release_host(save_key=latest_new_key)
+    coordinator.release_host(game_id, save_key=latest_new_key)
     print(f"[{game_id}] coordinator's save_keys['{game_id}'] updated to '{latest_new_key}'.")
 
     if renamed_local_key:

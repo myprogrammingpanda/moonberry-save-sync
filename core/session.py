@@ -143,9 +143,9 @@ class SessionController:
         return self._slot_resources[slot_id]
 
     def _resolve_cloud_save_key(self, status: dict, save_name: str | None = None) -> str | None:
-        """The coordinator's claim/status is one global lock shared across
-        every game (now further keyed by save-slot too), but each save's
-        actual data is independent -- status["save_keys"] is a
+        """The coordinator's status covers every game (one host claim per
+        game, each naming a save slot), but each save's actual data is
+        independent -- status["save_keys"] is a
         {game_id: {slot_id: key}} map so each save can find its OWN
         latest key instead of whichever save most recently released. See
         core.save_status.resolve_slot_cloud_key for the full shape
@@ -263,7 +263,7 @@ class SessionController:
         return None
 
     def _announce_join_code(self, join_code: str, update_status_text=None) -> None:
-        self.coordinator.announce_join_code(join_code)
+        self.coordinator.announce_join_code(self.adapter.game_id, join_code)
         log.info("Shared join code '%s' with the group.", join_code)
         if update_status_text:
             update_status_text(f"Hosting as '{self.player_name}' — join code: {join_code}")
@@ -334,6 +334,16 @@ class SessionController:
         finally:
             self._sync_lock.release()
 
+    def _claim_refused_message(self, result: dict) -> str:
+        current = result.get("current") or {}
+        host_name = current.get("host_name") or "Someone"
+        # A coordinator from before per-game hosting refuses while anyone
+        # hosts anything, and then names that other game.
+        claimed_game = current.get("game_id")
+        if claimed_game and claimed_game != self.adapter.game_id:
+            return f"{host_name} is hosting another game right now — try again once they're done."
+        return f"{host_name} is already hosting {self.adapter.display_name} — try again later."
+
     def _host_now_locked(
         self, save_name: str | None = None, update_status_text=None, on_ready_for_launch=None, on_game_started=None
     ) -> tuple[bool, str]:
@@ -342,8 +352,7 @@ class SessionController:
         log.info("Host Now requested. Attempting to claim host...")
         result = self.coordinator.claim_host(self.adapter.game_id, slot_id, name)
         if not result.get("ok"):
-            host_name = result.get("current", {}).get("host_name") or "someone"
-            msg = f"Someone is currently hosting ({host_name}) — try again later."
+            msg = self._claim_refused_message(result)
             log.warning(msg)
             return False, msg
 
@@ -470,7 +479,7 @@ class SessionController:
         finally:
             self._host_now_pending = False
             if uploaded_successfully:
-                self.coordinator.release_host(save_key=uploaded_key)
+                self.coordinator.release_host(self.adapter.game_id, save_key=uploaded_key)
                 local_record.write(uploaded_key)
                 self._refresh_content_hash(save_name=name)
                 log.info(
@@ -480,7 +489,7 @@ class SessionController:
                 storage.prune_old_saves(keep=self.max_saved_versions)
                 self.notifier.notify(self.adapter.game_id, self.player_name, event="ended")
             else:
-                self.coordinator.release_host()
+                self.coordinator.release_host(self.adapter.game_id)
                 log.info("Host slot released (no upload happened this time).")
 
         if uploaded_successfully:
@@ -583,8 +592,7 @@ class SessionController:
         log.info("Manual upload requested. Attempting to claim host...")
         result = self.coordinator.claim_host(self.adapter.game_id, slot_id, name)
         if not result.get("ok"):
-            host_name = result.get("current", {}).get("host_name") or "someone"
-            msg = f"Someone is currently hosting ({host_name}) — try again later."
+            msg = self._claim_refused_message(result)
             log.warning(msg)
             return False, msg
 
@@ -603,12 +611,12 @@ class SessionController:
             log.exception("Manual upload failed.")
         finally:
             if uploaded_successfully:
-                self.coordinator.release_host(save_key=uploaded_key)
+                self.coordinator.release_host(self.adapter.game_id, save_key=uploaded_key)
                 local_record.write(uploaded_key)
                 self._refresh_content_hash(save_name=name)
                 storage.prune_old_saves(keep=self.max_saved_versions)
             else:
-                self.coordinator.release_host()
+                self.coordinator.release_host(self.adapter.game_id)
 
         if uploaded_successfully:
             msg = f"Save uploaded as '{uploaded_key}'."

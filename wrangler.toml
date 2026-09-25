@@ -5,3 +5,13 @@ compatibility_date = "2026-09-04"
 [[kv_namespaces]]
 binding = "HOST_KV"
 id = "3e725a4e4a6e48e8be239b5c8e473693"
+
+# All coordinator state lives in one SQLite-backed Durable Object (the only
+# kind available on the Workers Free plan); HOST_KV above just keeps a copy.
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]

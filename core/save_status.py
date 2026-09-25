@@ -11,6 +11,8 @@ already follows)."""
 from dataclasses import dataclass
 from datetime import datetime
 
+from core.host_status import hosts_by_game
+
 
 def resolve_slot_cloud_key(status: dict, game_id: str, slot_id: str, own_prefix: str) -> str | None:
     """Finds this (game, slot)'s latest known cloud save key in a
@@ -68,19 +70,18 @@ def cloud_key_uploaded_at(cloud_key: str | None, own_prefix: str) -> datetime | 
 
 def resolve_slot_hosting_by(status: dict, game_id: str, slot_id: str) -> str | None:
     """The player name currently hosting THIS save, or None if nobody is
-    (or someone's hosting a different game/save -- the coordinator's
-    claim is global, but only ever names one specific game+slot at a
-    time). save_slot is only present on claims from a client running
-    this multi-save-aware version or later; an older client's claim has
+    (or that game's host is on a different save -- one host per game,
+    each claim naming one specific save slot). save_slot is only present
+    on claims from a client running this multi-save-aware version or
+    later; an older client's claim has
     no save_slot at all, so it can never match a specific slot here --
     the sidebar/Overview status text (which only cares about game_id,
     not slot) still shows "someone is hosting" correctly either way,
     this is purely the Saves tab's per-row detail."""
-    if not status.get("hosting") or status.get("game_id") != game_id:
+    host = hosts_by_game(status).get(game_id)
+    if not host or host.get("save_slot") != slot_id:
         return None
-    if status.get("save_slot") != slot_id:
-        return None
-    return status.get("host_name")
+    return host.get("host_name")
 
 
 @dataclass
