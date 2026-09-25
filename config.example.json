@@ -37,6 +37,11 @@
       "dragonwilds_saves_folder": "%LOCALAPPDATA%\\RSDragonwilds\\Saved\\SaveGames",
       "dragonwilds_world_name": "YourWorldName",
       "dragonwilds_launch_uri": "steam://rungameid/1374490"
+    },
+    "vrising": {
+      "vrising_saves_folder": "%userprofile%\\AppData\\LocalLow\\Stunlock Studios\\VRising\\Saves\\v4",
+      "vrising_world_name": "YourWorldName",
+      "vrising_launch_uri": "steam://rungameid/1604030"
     }
   }
 }

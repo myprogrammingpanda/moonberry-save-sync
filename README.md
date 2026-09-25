@@ -51,6 +51,15 @@ without changing how it works today.
    PC before syncing. The Game Pass side has been tested on a real
    install; the Steam side hasn't yet.
 
+   **V Rising** (Steam, **Private Game** hosted from the game — not a
+   dedicated server): set **World name** to the world's name exactly as
+   it shows in **Continue / Load Game**. Worlds in your Steam Cloud saves
+   are found automatically; a world downloaded for the first time goes
+   into your local saves and shows up in Load Game as a local world.
+   Everyone keeps their own character when someone else hosts. Friends
+   join through a Steam invite or the server list — there's no join code
+   — and the game asks the host for the world's password each time.
+
    **Setting this up for a new friend group?** See [`SETUP.md`](SETUP.md)
    for deploying your own coordinator and storage — only one person per
    group needs to do this, once.
