@@ -24,7 +24,7 @@ from pathlib import Path
 import requests
 
 from core.save_status import resolve_slot_cloud_key
-from core.storage import LocalContentHash, LocalSaveRecord, SaveStorage
+from core.storage import LocalContentHash, LocalSaveRecord, SaveStorage, prune_local_backups
 
 log = logging.getLogger("moonberry-sync")
 
@@ -199,6 +199,7 @@ class SessionController:
                 local_save_key,
             )
             self.adapter.backup_local_save(self.state_dir / "local_backups", save_name=name)
+            prune_local_backups(self.state_dir / "local_backups", keep=self.max_saved_versions)
             tmp_zip = self.state_dir / f"_incoming_save_{self.adapter.game_id}_{slot_id}.zip"
             if storage.download_save(tmp_zip, effective_cloud_key):
                 self.adapter.unzip_save(tmp_zip)
@@ -486,7 +487,7 @@ class SessionController:
                     "Save uploaded ('%s') and host slot released. Thanks for playing!",
                     uploaded_key,
                 )
-                storage.prune_old_saves(keep=self.max_saved_versions)
+                storage.prune_old_saves(keep=self.max_saved_versions, protect=uploaded_key)
                 self.notifier.notify(self.adapter.game_id, self.player_name, event="ended")
             else:
                 self.coordinator.release_host(self.adapter.game_id)
@@ -614,7 +615,7 @@ class SessionController:
                 self.coordinator.release_host(self.adapter.game_id, save_key=uploaded_key)
                 local_record.write(uploaded_key)
                 self._refresh_content_hash(save_name=name)
-                storage.prune_old_saves(keep=self.max_saved_versions)
+                storage.prune_old_saves(keep=self.max_saved_versions, protect=uploaded_key)
             else:
                 self.coordinator.release_host(self.adapter.game_id)
 

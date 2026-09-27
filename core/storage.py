@@ -5,6 +5,7 @@ games can share one bucket without colliding."""
 
 import logging
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -76,30 +77,116 @@ class SaveStorage:
         client = self._client()
         client.upload_file(str(src_zip), self.bucket, key)
 
-    def prune_old_saves(self, keep: int = 5):
+    def _is_own_save_key(self, key: str) -> bool:
+        # Exactly <prefix><timestamp>.zip. A bare startswith() would also
+        # match another save whose name merely begins with this one's
+        # ("world" vs "world_old": prefix "valheim_world_" vs
+        # "valheim_world_old_").
+        rest = key[len(self.key_prefix):] if key.startswith(self.key_prefix) else ""
+        return rest.endswith(".zip") and rest[:-4].isdigit()
+
+    def prune_old_saves(self, keep: int = 5, protect: str | None = None):
         """Keeps cloud storage from growing forever now that every session
         creates a new file. Keeps the most recent `keep` save files for this
-        game and deletes older ones. Never fatal."""
+        save (plus `protect`, the one just uploaded) and deletes older ones
+        for good. Never fatal.
+
+        "For good" matters on Backblaze B2: its buckets keep every version
+        by default, so a plain delete only hides a file and it keeps taking
+        up space. Deleting each stored version by id removes it for real.
+        Providers without versions (e.g. R2) don't list them; they get a
+        plain delete, which is already permanent there."""
         try:
             client = self._client()
-            paginator = client.get_paginator("list_objects_v2")
-            all_saves = []
-            for page in paginator.paginate(Bucket=self.bucket, Prefix=self.key_prefix):
-                for obj in page.get("Contents", []):
-                    all_saves.append(obj["Key"])
+            try:
+                versions = self._list_versions(client)
+            except client.exceptions.ClientError as e:
+                log.info("Storage doesn't list file versions (%s) -- pruning with plain deletes.", e)
+                versions = None
 
-            if len(all_saves) <= keep:
-                return
+            if versions is None:
+                keys = [
+                    obj["Key"]
+                    for page in client.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=self.key_prefix)
+                    for obj in page.get("Contents", [])
+                    if self._is_own_save_key(obj["Key"])
+                ]
+                to_delete = self._keys_to_prune(keys, keep, protect)
+                for key in to_delete:
+                    client.delete_object(Bucket=self.bucket, Key=key)
+                removed = len(to_delete)
+            else:
+                # key -> [version ids], and which keys are still visible
+                # (their newest entry is a file, not a delete marker).
+                visible = [key for key, entry in versions.items() if entry["visible"]]
+                keep_set = set(visible) - set(self._keys_to_prune(visible, keep, protect))
+                removed = 0
+                for key, entry in versions.items():
+                    if key in keep_set:
+                        continue
+                    for version_id in entry["ids"]:
+                        client.delete_object(Bucket=self.bucket, Key=key, VersionId=version_id)
+                    removed += 1
 
-            # Keys are named <prefix><unix_timestamp>.zip, so a plain string
-            # sort works correctly for chronological order too.
-            all_saves.sort(reverse=True)
-            to_delete = all_saves[keep:]
-            for key in to_delete:
-                client.delete_object(Bucket=self.bucket, Key=key)
-            log.info("Pruned %d old save version(s), kept the most recent %d.", len(to_delete), keep)
+            if removed:
+                log.info("Pruned %d old save version(s), kept the most recent %d.", removed, keep)
         except Exception:
             log.exception("Failed to prune old save versions (non-fatal, continuing).")
+
+    def _list_versions(self, client) -> dict:
+        """{key: {"ids": [version ids incl. delete markers], "visible": bool}}
+        for this save's own keys."""
+        versions = {}
+        for page in client.get_paginator("list_object_versions").paginate(Bucket=self.bucket, Prefix=self.key_prefix):
+            for kind in ("Versions", "DeleteMarkers"):
+                for v in page.get(kind, []):
+                    if not self._is_own_save_key(v["Key"]):
+                        continue
+                    entry = versions.setdefault(v["Key"], {"ids": [], "visible": False})
+                    entry["ids"].append(v["VersionId"])
+                    if kind == "Versions" and v.get("IsLatest"):
+                        entry["visible"] = True
+        return versions
+
+    def _keys_to_prune(self, keys: list[str], keep: int, protect: str | None) -> list[str]:
+        """Every key but the newest `keep` (and `protect`). Keys are
+        <prefix><unix_timestamp>.zip, so newest = largest timestamp."""
+        newest_first = sorted(keys, key=lambda k: int(k[len(self.key_prefix):-4]), reverse=True)
+        return [k for k in newest_first[max(keep, 1):] if k != protect]
+
+
+# Local backups are named "<save>_<YYYYmmdd_HHMMSS><suffix>" by every
+# game's backup_local_save (a folder, or one file per suffix, e.g. Valheim's
+# legacy .db + .fwl pair).
+_BACKUP_NAME = re.compile(r"^(?P<base>.+)_(?P<stamp>\d{8}_\d{6})(?P<suffix>(\.[^_]*)?)$")
+
+
+def prune_local_backups(backup_dir: Path, keep: int = 5) -> None:
+    """Keeps the newest `keep` backups of each save in state/local_backups
+    (one backup = every entry sharing a save name + timestamp) and deletes
+    older ones. Anything not named like a backup is left alone. Never fatal."""
+    try:
+        if not backup_dir.is_dir():
+            return
+        groups: dict[str, dict[str, list[Path]]] = {}
+        for entry in backup_dir.iterdir():
+            m = _BACKUP_NAME.match(entry.name)
+            if m:
+                groups.setdefault(m["base"], {}).setdefault(m["stamp"], []).append(entry)
+
+        removed = 0
+        for stamps in groups.values():
+            for stamp in sorted(stamps, reverse=True)[max(keep, 1):]:
+                for entry in stamps[stamp]:
+                    if entry.is_dir():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                removed += 1
+        if removed:
+            log.info("Removed %d old local backup(s), kept the newest %d per save.", removed, keep)
+    except Exception:
+        log.exception("Failed to prune old local backups (non-fatal, continuing).")
 
 
 class LocalSaveRecord:

@@ -66,7 +66,7 @@ _CLOSE_ACTION_LABELS = {
 
 _ADVANCED_FIELDS = [
     ("poll_interval_seconds", "Poll interval (seconds)", 30),
-    ("max_saved_versions", "Saved versions to keep", 5),
+    ("max_saved_versions", "Saved versions to keep (cloud + local backups)", 5),
 ]
 
 
