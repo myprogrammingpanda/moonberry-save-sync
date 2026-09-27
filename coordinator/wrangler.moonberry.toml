@@ -1,0 +1,23 @@
+# The ORIGINAL Moonberry group's coordinator -- deploy it with
+#   npx wrangler deploy --config coordinator/wrangler.moonberry.toml
+# Same Worker as wrangler.toml plus the HOST_KV copy that older setups
+# have. Keep `name`, the Durable Object and [[migrations]] in step with
+# wrangler.toml: the Worker's stored data belongs to this name + class.
+
+name = "moonberry-coordinator"
+main = "worker.js"
+compatibility_date = "2026-09-04"
+
+[[kv_namespaces]]
+binding = "HOST_KV"
+id = "3e725a4e4a6e48e8be239b5c8e473693"
+
+# All coordinator state lives in one SQLite-backed Durable Object (the only
+# kind available on the Workers Free plan); HOST_KV above just keeps a copy.
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]

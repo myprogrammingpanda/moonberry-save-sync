@@ -16,41 +16,51 @@ bucket work for every game the app supports, for your whole group.
 ## 1. The coordinator (Cloudflare Worker)
 
 You need a free [Cloudflare](https://dash.cloudflare.com/sign-up) account
-and [Node.js](https://nodejs.org/) (for Cloudflare's `wrangler` tool). The
-coordinator keeps its state in a Durable Object, which has to be set up
-with `wrangler` (the dashboard's code editor can't create one) — it's all
-on Cloudflare's free plan.
+and a free [GitHub](https://github.com/signup) account. Everything below
+is on Cloudflare's free plan.
 
-From a terminal in this repo's folder:
+1. First, make up the coordinator's password (`SHARED_SECRET`): a long
+   random one, e.g. from your password manager's generator (30+
+   characters). Save it somewhere — every player needs it, and anyone who
+   has it can claim the host slot, so share it privately.
+2. Click:
+
+   [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/myprogrammingpanda/moonberry-save-sync/tree/master/coordinator)
+
+3. Log in to Cloudflare and connect GitHub when asked (it copies the
+   coordinator's code into your own GitHub account).
+4. Give the Worker a name (e.g. `yourgroup-coordinator`), paste the
+   password from step 1 into **SHARED_SECRET**, and click **Deploy**.
+5. When it's done, copy your Worker's URL, something like
+   `https://yourgroup-coordinator.<your-subdomain>.workers.dev`. That's the
+   **Coordinator URL** everyone enters in the app.
+
+<details>
+<summary>Without the button (terminal, with Node.js)</summary>
+
+From a terminal in this repo's `coordinator` folder:
 
 ```
 npm install -g wrangler
 wrangler login
-wrangler kv namespace create sync-status
 ```
 
-Open [`wrangler.toml`](wrangler.toml) and change two things: `name` (e.g.
-`yourgroup-sync-coordinator`) and the KV namespace `id` (the one the
-command above printed). Leave the Durable Object and migration sections as
-they are. Then:
+Change `name` in [`coordinator/wrangler.toml`](coordinator/wrangler.toml)
+(e.g. `yourgroup-coordinator`), then:
 
 ```
 wrangler secret put SHARED_SECRET
-# paste a long random value at the prompt, then:
+# paste the password from step 1 at the prompt, then:
 wrangler deploy
 ```
 
-- **`SHARED_SECRET`**: generate one with e.g. `openssl rand -hex 32`, or
-  any password generator. This is the value everyone's `config.json`
-  needs as `worker_secret` — anyone who has it can claim the host slot, so
-  treat it like a password, not something posted publicly.
-- `wrangler deploy` prints your Worker's URL, something like
-  `https://yourgroup-sync-coordinator.<your-subdomain>.workers.dev`.
-  That's `worker_url`.
+`wrangler deploy` prints the Worker's URL.
+</details>
 
-The KV namespace holds a readable copy of the coordinator's state (who's
-hosting, each world's latest save) — handy for a look in the Cloudflare
-dashboard under **Workers & Pages** → **KV**.
+The coordinator keeps its state (who's hosting, each world's latest save)
+in a Durable Object. `coordinator/wrangler.moonberry.toml` is the original
+group's own deploy config, which also keeps a readable copy in a KV
+namespace — new groups don't need it.
 
 ## 2. Storage (Backblaze B2 or Cloudflare R2)
 
@@ -90,8 +100,8 @@ document:
 
 | Setting              | Where it came from                         |
 |----------------------|---------------------------------------------|
-| Coordinator URL       | Your Worker's URL (step 1.6)                |
-| Coordinator secret    | The `SHARED_SECRET` value you set (step 1.5)|
+| Coordinator URL       | Your Worker's URL (step 1.5)                |
+| Coordinator secret    | The `SHARED_SECRET` value (step 1.1)        |
 | Storage endpoint URL  | Step 2.3                                    |
 | Storage access key ID | Step 2.4                                    |
 | Storage secret key    | Step 2.4                                    |

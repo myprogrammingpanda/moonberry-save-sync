@@ -17,7 +17,7 @@ from core.host_status import hosts_by_game
 def resolve_slot_cloud_key(status: dict, game_id: str, slot_id: str, own_prefix: str) -> str | None:
     """Finds this (game, slot)'s latest known cloud save key in a
     coordinator status blob, across every shape that blob might currently
-    be in (see worker.js): the new per-slot nested map, a pre-multi-save
+    be in (see coordinator/worker.js): the new per-slot nested map, a pre-multi-save
     flat per-game string, or (older still) the single global flat
     save_key -- adopting either flat form only if it actually matches
     this slot's OWN storage prefix, so a key that belongs to some other

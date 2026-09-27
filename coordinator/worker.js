@@ -15,10 +15,12 @@
 // a /release or /announce_code without a game_id is matched to the
 // caller's own claim by player name.
 //
-// After every change the full state is also copied to the HOST_KV key the
-// previous (KV-only) version of this worker used: readable in the
-// Cloudflare dashboard, and it lets that version be redeployed as-is. It's
-// imported from there the first time this version runs.
+// Optional HOST_KV binding: after every change the full state is also
+// copied to the KV key the previous (KV-only) version of this worker used:
+// readable in the Cloudflare dashboard, and it lets that version be
+// redeployed as-is. It's imported from there the first time this version
+// runs. A coordinator set up from scratch (wrangler.toml / the Deploy
+// button) has no KV and doesn't need it.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -134,7 +136,7 @@ export class Coordinator extends DurableObject {
   async load() {
     let state = await this.ctx.storage.get(STATE_KEY);
     if (state === undefined) {
-      const raw = await this.env.HOST_KV.get(KV_KEY);
+      const raw = this.env.HOST_KV ? await this.env.HOST_KV.get(KV_KEY) : null;
       state = withLegacyView(normalize(raw ? JSON.parse(raw) : emptyState()));
       await this.ctx.storage.put(STATE_KEY, state);
     }
@@ -144,6 +146,7 @@ export class Coordinator extends DurableObject {
   async save(state) {
     const next = withLegacyView(state);
     await this.ctx.storage.put(STATE_KEY, next);
+    if (!this.env.HOST_KV) return next;
     try {
       await this.env.HOST_KV.put(KV_KEY, JSON.stringify(next));
     } catch (e) {

@@ -1,13 +1,12 @@
+# The coordinator for a new group -- what the Deploy to Cloudflare button
+# (see SETUP.md) and a plain `wrangler deploy` from this folder use.
+# Pick your own `name`; it becomes part of the Worker's URL.
 name = "moonberry-coordinator"
 main = "worker.js"
 compatibility_date = "2026-09-04"
 
-[[kv_namespaces]]
-binding = "HOST_KV"
-id = "3e725a4e4a6e48e8be239b5c8e473693"
-
 # All coordinator state lives in one SQLite-backed Durable Object (the only
-# kind available on the Workers Free plan); HOST_KV above just keeps a copy.
+# kind available on the Workers Free plan).
 [[durable_objects.bindings]]
 name = "COORDINATOR"
 class_name = "Coordinator"
@@ -15,3 +14,6 @@ class_name = "Coordinator"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Coordinator"]
+
+# Secret (set it, don't put it here -- the Deploy button asks for it):
+#   SHARED_SECRET   the password every player's app uses

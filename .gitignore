@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .wrangler/
 .shortcuts-offered
+
+# Local secrets for wrangler dev -- never commit
+.dev.vars
