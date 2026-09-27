@@ -58,7 +58,7 @@ wrangler deploy
 </details>
 
 The coordinator keeps its state (who's hosting, each world's latest save)
-in a Durable Object. `coordinator/wrangler.moonberry.toml` is the original
+in a Durable Object. `wrangler.moonberry.toml` (in the repo root) is the original
 group's own deploy config, which also keeps a readable copy in a KV
 namespace — new groups don't need it.
 

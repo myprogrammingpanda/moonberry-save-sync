@@ -4,7 +4,7 @@
   "cloudflare": {
     "bindings": {
       "SHARED_SECRET": {
-        "description": "The password your group's Moonberry apps use. Make up a **long random one** (use a password manager's generator, 30+ characters) and **save it** — every player enters it in the app as the coordinator secret. Anyone who has it can claim hosting, so share it privately."
+        "description": "The password your group's Moonberry apps use. Make up a long random one (a password manager's generator, 30+ characters) and save it: every player enters it in the app as the coordinator secret. Share it privately."
       }
     }
   }

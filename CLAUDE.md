@@ -11,4 +11,4 @@ Merge back to `master` when the work is done and confirmed working (fast-forward
 
 ## Coordinator
 
-The coordinator Worker lives in `coordinator/`. Deploy the original group's coordinator with `npx wrangler deploy --config coordinator/wrangler.moonberry.toml` — never with `coordinator/wrangler.toml`, which is the template for new groups (Deploy to Cloudflare button) and has no `HOST_KV`. Keep `name`, the Durable Object binding and `[[migrations]]` identical in both files: the stored data belongs to that Worker name + class.
+The coordinator Worker lives in `coordinator/`. Deploy the original group's coordinator with `npx wrangler deploy --config wrangler.moonberry.toml` (from the repo root) — never with `coordinator/wrangler.toml`, which is the template for new groups (Deploy to Cloudflare button) and has no `HOST_KV`. Keep `name`, the Durable Object binding and `[[migrations]]` identical in both files: the stored data belongs to that Worker name + class.

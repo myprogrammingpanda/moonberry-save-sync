@@ -1,1 +1,2 @@
+# The password your group's Moonberry apps use: make up a long random one (30+ characters) and save it. Every player enters it in the app as the coordinator secret.
 SHARED_SECRET=
